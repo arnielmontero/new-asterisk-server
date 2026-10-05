@@ -1,0 +1,9 @@
+# Files executed or parsed inside Linux containers must keep LF endings.
+* text=auto
+*.sh text eol=lf
+*.conf text eol=lf
+*.template text eol=lf
+Dockerfile text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.sql text eol=lf

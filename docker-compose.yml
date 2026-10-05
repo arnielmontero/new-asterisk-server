@@ -1,0 +1,135 @@
+name: communications-stack
+
+services:
+  database:
+    image: postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    # No published ports: reachable only from the internal network as database:5432.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  asterisk:
+    build:
+      context: ./asterisk
+    image: communications-stack/asterisk:22.11.0
+    restart: unless-stopped
+    # Host networking is required for SIP/RTP/ICE on the LAN (no bridge port mappings).
+    network_mode: host
+    init: true
+    stop_grace_period: 30s
+    environment:
+      EXT_1001_PASSWORD: ${EXT_1001_PASSWORD:?set EXT_1001_PASSWORD in .env}
+      EXT_1002_PASSWORD: ${EXT_1002_PASSWORD:?set EXT_1002_PASSWORD in .env}
+      EXT_1001_PHONE_PASSWORD: ${EXT_1001_PHONE_PASSWORD:?set EXT_1001_PHONE_PASSWORD in .env}
+      EXT_1002_PHONE_PASSWORD: ${EXT_1002_PHONE_PASSWORD:?set EXT_1002_PHONE_PASSWORD in .env}
+      AMI_USER: ${AMI_USER:?set AMI_USER in .env}
+      AMI_PASS: ${AMI_PASS:?set AMI_PASS in .env}
+      AMI_PORT: ${AMI_PORT:-5038}
+      AMI_PERMIT: ${AMI_PERMIT:-172.16.0.0/12}
+      SERVER_IP: ${SERVER_IP:?set SERVER_IP in .env}
+      SERVER_HOSTNAME: ${SERVER_HOSTNAME:?set SERVER_HOSTNAME in .env}
+      LAN_SUBNET: ${LAN_SUBNET:?set LAN_SUBNET in .env}
+      PROXY_PERMIT: ${PROXY_PERMIT:-172.16.0.0/12}
+      RTP_START: ${RTP_START:-10000}
+      RTP_END: ${RTP_END:-10200}
+    volumes:
+      # Config files are templates (read-only); the entrypoint renders them with
+      # secrets into /run/asterisk/etc so secrets never land on the host disk.
+      - ./asterisk/config:/etc/asterisk:ro
+      - ./asterisk/keys:/etc/asterisk/keys:ro
+      - asterisk_data:/var/lib/asterisk
+      - asterisk_logs:/var/log/asterisk
+    tmpfs:
+      - /run/asterisk:mode=0755
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  backend:
+    build:
+      context: ./backend
+    image: communications-stack/backend:1.0.0
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      AMI_HOST: ${ASTERISK_HOST:-host.docker.internal}
+      AMI_PORT: ${AMI_PORT:-5038}
+      AMI_USER: ${AMI_USER}
+      AMI_PASS: ${AMI_PASS}
+      SERVER_HOSTNAME: ${SERVER_HOSTNAME}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - internal
+    # No published ports: reached only through the frontend (Nginx) container.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    image: communications-stack/frontend:1.0.0
+    restart: unless-stopped
+    init: true
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ASTERISK_HOST: ${ASTERISK_HOST:-host.docker.internal}
+      ASTERISK_WS_PORT: "8088"
+      SERVER_HOSTNAME: ${SERVER_HOSTNAME}
+      SERVER_IP: ${SERVER_IP}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - backend
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  pgdata:
+  asterisk_data:
+  asterisk_logs:

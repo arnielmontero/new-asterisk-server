@@ -5,7 +5,7 @@ Update this file as work lands. Status is only moved to `PASS` after the behavio
 
 **Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done and verified · `MANUAL REQUIRED` needs hardware/human · `BLOCKED` cannot proceed (reason noted)
 
-**Last updated:** 2026-10-05
+**Last updated:** 2026-10-05 (Phase 1 verified)
 
 ---
 
@@ -13,10 +13,10 @@ Update this file as work lands. Status is only moved to `PASS` after the behavio
 
 | Phase | Scope | Spec priority steps (§78) | Done | Status |
 |-------|-------|---------------------------|------|--------|
-| 1 | Foundation & Telephony Core | 1–4 | 0 / 27 | Not started |
+| 1 | Foundation & Telephony Core | 1–4 | 21 / 27 (+6 partial) | Core verified; backend/frontend compose services and DTLS handshake pending |
 | 2 | Application: Backend, Frontend, Calls & Paging | 5–11 | 0 / 37 | Not started |
 | 3 | Hardening, Validation & Delivery | 12–17 | 0 / 24 | Not started |
-| | **Total** | | **0 / 88** | |
+| | **Total** | | **21 / 88** | |
 
 Phase gate rule (§78): do not start the next phase while the previous phase's exit criteria are failing.
 
@@ -27,45 +27,45 @@ Phase gate rule (§78): do not start the next phase while the previous phase's e
 Goal: a running, pinned Asterisk 22 LTS container that accepts SIP (UDP) and WebRTC (WS) registrations for 1001/1002 and answers the echo test, with TLS material generated.
 
 ### 1.1 Repository & Docker foundation (§54, §55, §70)
-- [ ] Project structure (`asterisk/`, `backend/`, `frontend/`, `scripts/`)
-- [ ] `.gitignore` (env, keys, certs, dumps, logs, node_modules)
-- [ ] `.env.example` with all variables from §55 (+ RTP range, LAN subnet, etc.)
-- [ ] `docker-compose.yml`: 4 services, `restart: unless-stopped`, healthchecks, pinned images, `host-gateway` mapping (§6, §14)
-- [ ] `docker compose config` validates
+- [~] Project structure — `asterisk/`, `scripts/` exist; `backend/` and `frontend/` are created in Phase 2
+- [x] `.gitignore` (env, keys, certs, dumps, logs, node_modules) + `.gitattributes` (LF for scripts/configs)
+- [x] `.env.example` with all variables from §55 (+ RTP range, LAN subnet, proxy ACL, phone passwords); `scripts/init-env.sh` generates a `.env` with random secrets
+- [~] `docker-compose.yml`: 4 services, `restart: unless-stopped`, healthchecks, pinned images, `host-gateway` mapping — asterisk + database run and are healthy; backend/frontend are defined but untested until Phase 2
+- [x] `docker compose config` validates
 
 ### 1.2 Asterisk exact pinned build (§7, §8)
-- [ ] Select one exact 22.x LTS patch version; record version + SHA256 in Dockerfile
-- [ ] Debian base image pinned (tag/digest), build deps pinned where practical
-- [ ] Dockerfile builds with PJSIP, res_http_websocket, DTLS-SRTP, Opus, Page(), Echo(), Dial()
-- [ ] Runs as non-root user; host networking; volume mounts per §7
-- [ ] Healthcheck (`asterisk -rx "core show uptime"`) detects a hung/dead Asterisk
-- [ ] Runtime check: required modules actually loaded (`module show`)
+- [x] Exact version **22.11.0**, source SHA256 verified in the Dockerfile (matches upstream `asterisk-22-current.sha256`)
+- [x] Debian 12.12-slim pinned by digest; Opus codec binary pinned by version + SHA256. Debian apt packages are not version-pinned (no snapshot repo) — known limitation
+- [x] Builds with PJSIP, res_http_websocket, SRTP/DTLS, Opus (transcoding), Page(), Echo(), Dial(), ConfBridge
+- [x] Runs the daemon as uid 10001 (entrypoint starts as root only to render config, then `setpriv` drops privileges); host networking; mounts per §7 (config `:ro`, keys, data volume, logs volume)
+- [~] Healthcheck (uptime + PJSIP UDP transport + HTTP server + AMI) reports healthy; negative case (detecting a broken Asterisk) not yet exercised
+- [x] Runtime check: all required modules `Running` (chan_pjsip, res_pjsip*, res_http_websocket, res_pjsip_transport_websocket, res_srtp, res_rtp_asterisk, app_page, app_confbridge, app_echo, app_dial, codec_opus/ulaw/alaw)
 
 ### 1.3 Base Asterisk config (§9–§12, §25–§26)
-- [ ] `asterisk.conf`, `modules.conf`, `logger.conf`
-- [ ] `http.conf` — plain WS on `0.0.0.0:8088`, `/ws`
-- [ ] `rtp.conf` — explicit RTP port range
-- [ ] `manager.conf` — dedicated AMI user, least-privilege, ACL restricted
-- [ ] Config templating: secrets from env, none committed (§3)
+- [x] `asterisk.conf`, `modules.conf`, `logger.conf` (startup log clean: only the benign "no music on hold" warning remains)
+- [x] `http.conf` — plain WS on `0.0.0.0:8088`; `http show status` lists `/ws`
+- [x] `rtp.conf` — explicit range 10000–10200, strict RTP, ICE
+- [x] `manager.conf` — dedicated AMI user, least privilege (read `system,call`; write `system,call,command,originate`), ACL
+- [x] Config templating: secrets come from env, rendered into `/run/asterisk/etc` at start (never written to the host)
 
 ### 1.4 PJSIP transports & endpoints (§10, §11, §43)
-- [ ] UDP transport :5060; WebSocket transport
-- [ ] `allow_guest=no`, no anonymous endpoint, LAN ACL
-- [ ] Endpoint 1001 (Office) / 1002 (Warehouse) — WebRTC profile (DTLS, ICE, AVPF, opus/ulaw/alaw)
-- [ ] Endpoint profile for physical SIP phones (UDP)
+- [x] UDP transport :5060; WebSocket transport
+- [x] No anonymous endpoint / no guest access; per-endpoint LAN/proxy ACL
+- [x] Endpoints 1001 (Office) / 1002 (Warehouse) — WebRTC profile; `pjsip show endpoint` confirms webrtc, DTLS (fingerprint, actpass), ICE, AVPF, rtcp-mux, opus/ulaw/alaw
+- [x] Physical phone profile (UDP, ulaw/alaw, no encryption) as `1001-phone` / `1002-phone`
 
 ### 1.5 Basic dialplan (§33, §41)
-- [ ] 1001 ↔ 1002 direct dial, 30 s timeout
-- [ ] 600 Echo test (Answer / Echo / Hangup)
+- [~] 1001 ↔ 1002 direct dial, 30 s timeout — dialplan loaded and inspected; calls between two registered clients are tested in Phase 2
+- [x] 600 Echo test (Answer / Echo / Hangup) — verified with a real SIP client (see exit criteria)
 
 ### 1.6 Certificates (§12, §15, §53) — script only; hardening in Phase 3
-- [ ] `scripts/generate-certs.sh`: LAN CA, Nginx cert (SANs from `SERVER_IP`/`SERVER_HOSTNAME`), separate Asterisk DTLS cert/key
+- [x] `scripts/generate-certs.sh`: LAN CA, Nginx cert (SANs from `SERVER_IP`/`SERVER_HOSTNAME`), separate Asterisk DTLS cert/key; self-checks (chain, SANs, key match) pass; refuses to overwrite without `--force`
 
 ### Phase 1 exit criteria
-- [ ] Asterisk container `healthy`; exact version printed from `core show version`
-- [ ] `pjsip show transports` lists UDP + WS; `pjsip show endpoints` lists 1001/1002
-- [ ] `http show status` shows WS on 8088; DTLS cert loads without error
-- [ ] A real SIP client registers on UDP and 600 returns echo — or marked `MANUAL REQUIRED`
+- [x] Asterisk container `healthy`; `core show version` → Asterisk 22.11.0
+- [x] `pjsip show transports` lists UDP + WS; `pjsip show endpoints` lists 1001, 1002, 1001-phone, 1002-phone
+- [~] `http show status` shows `/ws` on 8088; DTLS cert/key load without error at startup — an actual DTLS handshake needs a browser (Phase 2/3)
+- [x] Real SIP client (baresip, UDP) registered as `1001-phone`, called 600, and the received audio was the 440 Hz tone it sent (RMS 8491, tone/off-tone power ratio ≈ 1e9, ~64 kbit/s RTP both ways). Wrong password and unknown user were rejected; AMI login works from a permitted network, fails with wrong credentials, and is refused from a non-permitted source
 
 ---
 
@@ -174,9 +174,9 @@ Status values: `NOT RUN` · `PASS` · `FAIL` · `MANUAL REQUIRED`. Evidence colu
 
 | # | Test | Phase | Status | Evidence |
 |---|------|-------|--------|----------|
-| 1 | Docker Compose config validates | 1 | NOT RUN | |
-| 2 | All required containers start | 1 | NOT RUN | |
-| 3 | All applicable healthchecks pass | 1–2 | NOT RUN | |
+| 1 | Docker Compose config validates | 1 | PASS | `docker compose config -q` exit 0; 4 services, all `restart: unless-stopped`, no `latest` tags |
+| 2 | All required containers start | 1 | NOT RUN | asterisk + database start; backend/frontend do not exist yet |
+| 3 | All applicable healthchecks pass | 1–2 | NOT RUN | asterisk and database `healthy`; backend/frontend pending |
 | 4 | HTTPS works | 2 | NOT RUN | |
 | 5 | Browser trusts generated LAN CA after install | 3 | NOT RUN | |
 | 6 | `/health` reports healthy DB and AMI | 2 | NOT RUN | |
@@ -188,7 +188,7 @@ Status values: `NOT RUN` · `PASS` · `FAIL` · `MANUAL REQUIRED`. Evidence colu
 | 12 | 1002 WebRTC registration | 2 | NOT RUN | |
 | 13 | 1001 → 1002 rings, two-way audio | 2 | NOT RUN | |
 | 14 | 1002 → 1001 rings, two-way audio | 2 | NOT RUN | |
-| 15 | 1001 → 600 real echo audio | 1–2 | NOT RUN | |
+| 15 | 1001 → 600 real echo audio | 1–2 | NOT RUN | Echo verified over UDP with a SIP client (phone profile). Browser/WebRTC path still to be verified |
 | 16 | Page All works | 2 | NOT RUN | |
 | 17 | Page Office works | 2 | NOT RUN | |
 | 18 | Page Warehouse works | 2 | NOT RUN | |
@@ -215,4 +215,8 @@ Tests 11–22 involve browser microphone/speaker and live audio; anything that c
 |------|------|-------|
 | 2026-10-05 | Environment | Docker 28.4.0, Compose v2.39.2, Node 22.16, OpenSSL 3.2.4 available on the build host (Windows 11, Docker Desktop). |
 | 2026-10-05 | Host networking caveat | Asterisk requires `network_mode: host` (§7). On Docker Desktop for Windows this binds inside the Docker VM, not the Windows LAN IP — LAN SIP/RTP validation from other devices will need a Linux host or `MANUAL REQUIRED`. Revisit in Phase 1. |
-| | Asterisk version | To be selected and checksum-verified in Phase 1.2. |
+| 2026-10-05 | Asterisk version | Pinned **22.11.0** (SHA256 `3bd5ee04…ba54d94`), Debian 12.12-slim by digest, Digium Opus binary 22.0_1.3.0 (SHA256 `889e6b3d…472e20d`). |
+| 2026-10-05 | Phone endpoints | Physical phones register as `1001-phone` / `1002-phone` (a browser WebRTC endpoint and a plain-RTP phone cannot share one PJSIP endpoint). Dialing 1001/1002 rings both; caller ID is still 1001/1002. |
+| 2026-10-05 | Config rendering | `./asterisk/config` holds templates mounted read-only; the entrypoint renders them with secrets into `/run/asterisk/etc` (tmpfs) and runs Asterisk with `-C`. CLI/healthcheck must pass `-C /run/asterisk/etc/asterisk.conf`. |
+| 2026-10-05 | `/var/lib/asterisk` volume | Hides image content on upgrade, so the entrypoint refreshes `documentation/` (required for the Opus module to register) from an image copy on each start. |
+| 2026-10-05 | Docker Desktop caveat confirmed | Host networking works but binds inside the Docker VM (eth0 192.168.65.3). Bridge containers reach Asterisk at the bridge gateway (e.g. 172.17.0.1), and `host.docker.internal` points at Windows, not the VM — set `ASTERISK_HOST` accordingly when testing on Windows. LAN/SIP-phone/browser tests from other devices need a Linux host or are `MANUAL REQUIRED`. |
