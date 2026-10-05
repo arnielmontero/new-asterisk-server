@@ -81,6 +81,8 @@ services:
       AMI_USER: ${AMI_USER}
       AMI_PASS: ${AMI_PASS}
       SERVER_HOSTNAME: ${SERVER_HOSTNAME}
+      EXT_1001_PASSWORD: ${EXT_1001_PASSWORD:?set EXT_1001_PASSWORD in .env}
+      EXT_1002_PASSWORD: ${EXT_1002_PASSWORD:?set EXT_1002_PASSWORD in .env}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -90,7 +92,7 @@ services:
       - internal
     # No published ports: reached only through the frontend (Nginx) container.
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 3

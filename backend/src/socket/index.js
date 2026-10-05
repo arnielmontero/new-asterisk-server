@@ -1,0 +1,81 @@
+'use strict';
+const { Server } = require('socket.io');
+const { parseCookie } = require('cookie');
+const { COOKIE_NAME } = require('../auth/middleware');
+
+/**
+ * Real-time channel for the dashboard.
+ *
+ * Authenticated with the same HttpOnly session cookie (or a bearer token) as the
+ * REST API. Unauthenticated connections are refused, so extension state is never
+ * visible without logging in.
+ *
+ * Server -> client events (payloads are plain JSON):
+ *   extension.snapshot        [{ extension, name, state, registered, clients }]   on connect
+ *   extension.status.changed  { extension, name, state, registered, clients }
+ *   call.started              { from, to }
+ *   call.ended                { from, to, durationSeconds }
+ *   paging.started            { group, name, extension, username, targets, status, startedAt }
+ *   paging.ended              { group, name, extension, username, reason, durationSeconds }
+ *   paging.failed             { group, name, extension, username, reason }
+ *   ami.connected / ami.disconnected   { state, ... }          (administrators only)
+ *   ami.snapshot              { state, ... }                    (administrators only, on connect)
+ */
+function createSocketServer({ httpServer, authService, state, paging, ami, logger }) {
+  const io = new Server(httpServer, {
+    path: '/socket.io',
+    serveClient: false,
+    // Same-origin deployment: no cross-origin access.
+    cors: { origin: false },
+    pingInterval: 10000,
+    pingTimeout: 10000,
+  });
+
+  io.use(async (socket, next) => {
+    try {
+      const header = socket.handshake.headers.authorization;
+      const cookies = parseCookie(socket.handshake.headers.cookie || '');
+      // Browsers authenticate with the HttpOnly session cookie; API clients may send a
+      // bearer header or the handshake `auth: { token }` payload.
+      const handshakeToken = typeof socket.handshake.auth?.token === 'string' ? socket.handshake.auth.token : null;
+      const token = header && /^Bearer\s+\S+$/i.test(header)
+        ? header.replace(/^Bearer\s+/i, '')
+        : handshakeToken || cookies[COOKIE_NAME];
+      const result = await authService.authenticateToken(token);
+      if (!result) return next(new Error('unauthorized'));
+      socket.data.user = result.user;
+      return next();
+    } catch (err) {
+      logger.warn({ err: err.message }, 'socket authentication error');
+      return next(new Error('unauthorized'));
+    }
+  });
+
+  io.on('connection', (socket) => {
+    const { user } = socket.data;
+    socket.join(`user:${user.id}`);
+    socket.emit('extension.snapshot', state.snapshot());
+    if (user.role === 'admin') {
+      socket.join('admins');
+      socket.emit('ami.snapshot', ami.status());
+    }
+    const current = paging.current();
+    if (current && current.status === 'live') socket.emit('paging.started', current);
+  });
+
+  state.on('change', (ext) => io.emit('extension.status.changed', ext));
+  state.on('call.started', (c) => io.emit('call.started', c));
+  state.on('call.ended', (c) => io.emit('call.ended', c));
+  paging.on('started', (p) => io.emit('paging.started', p));
+  paging.on('ended', (p) => io.emit('paging.ended', p));
+  paging.on('failed', (p) => io.emit('paging.failed', p));
+  ami.on('connected', () => io.to('admins').emit('ami.connected', ami.status()));
+  ami.on('disconnected', () => io.to('admins').emit('ami.disconnected', ami.status()));
+
+  /** Drop live sockets of a user whose role/status/password changed or who was deleted. */
+  const disconnectUser = (userId) => io.in(`user:${userId}`).disconnectSockets(true);
+
+  return { io, disconnectUser };
+}
+
+module.exports = { createSocketServer };
