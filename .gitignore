@@ -34,3 +34,6 @@ tmp/
 *.swp
 .DS_Store
 Thumbs.db
+
+# ...but the schema migrations are source code
+!backend/migrations/*.sql
