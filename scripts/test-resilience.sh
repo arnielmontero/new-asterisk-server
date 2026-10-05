@@ -9,11 +9,13 @@
 set -uo pipefail
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 cd "$(dirname "$0")/.."
+# Compose project name (default matches docker-compose.yml); override to test a second copy side by side.
+PROJECT="${COMPOSE_PROJECT_NAME:-communications-stack}"; export COMPOSE_PROJECT_NAME="$PROJECT"
 
 env_value() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
 HOSTNAME_="$(env_value SERVER_HOSTNAME)"
-NETWORK="communications-stack_internal"
-FRONTEND_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${NETWORK}\").IPAddress}}" communications-stack-frontend-1)"
+NETWORK="${PROJECT}_internal"
+FRONTEND_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${NETWORK}\").IPAddress}}" ${PROJECT}-frontend-1)"
 [ -n "$FRONTEND_IP" ] || { echo "frontend container is not running" >&2; exit 1; }
 
 SYNC="$(pwd)/backups/.sync-$$"

@@ -10,6 +10,8 @@
 set -uo pipefail
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 cd "$(dirname "$0")/.."
+# Compose project name (default matches docker-compose.yml); override to test a second copy side by side.
+PROJECT="${COMPOSE_PROJECT_NAME:-communications-stack}"; export COMPOSE_PROJECT_NAME="$PROJECT"
 
 QUICK=0
 [ "${1:-}" = "--quick" ] && QUICK=1
@@ -20,7 +22,7 @@ env_value() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
 HOST="$(env_value SERVER_HOSTNAME)"
 ADMIN_PW="$(env_value ADMIN_PASSWORD)"
 ASTERISK_VERSION="$(grep -E '^ARG ASTERISK_VERSION=' asterisk/Dockerfile | cut -d= -f2)"
-AST="communications-stack-asterisk-1"
+AST="${PROJECT}-asterisk-1"
 CURL=(curl -sS --max-time 15 --ssl-no-revoke --cacert certs/LAN_CA.crt --resolve "${HOST}:443:127.0.0.1")
 API="https://${HOST}/api"
 

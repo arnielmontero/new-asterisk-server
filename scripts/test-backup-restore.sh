@@ -8,6 +8,8 @@
 set -uo pipefail
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 cd "$(dirname "$0")/.."
+# Compose project name (default matches docker-compose.yml); override to test a second copy side by side.
+PROJECT="${COMPOSE_PROJECT_NAME:-communications-stack}"; export COMPOSE_PROJECT_NAME="$PROJECT"
 
 env_value() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
 HOST="$(env_value SERVER_HOSTNAME)"; ADMIN_PW="$(env_value ADMIN_PASSWORD)"
@@ -63,8 +65,8 @@ exists "$AFTER" && bad "user created after the backup must be gone" || ok "user 
 TOKEN="$(login)"; [ -n "$TOKEN" ] && ok "administrator can log in after the restore" || bad "administrator can log in after the restore"
 "${CURL[@]}" "$API/health" | grep -q '"status":"ok"' && ok "/health ok after the restore" || bad "/health ok after the restore"
 [ -n "$(ls backups/pre-restore/*.tar.gz 2>/dev/null)" ] && ok "a safety backup of the pre-restore state was taken" || bad "a safety backup of the pre-restore state was taken"
-for _ in $(seq 1 20); do docker exec communications-stack-asterisk-1 asterisk -C /run/asterisk/etc/asterisk.conf -rx 'core show version' 2>/dev/null | grep -q 'Asterisk 22' && break; sleep 2; done
-docker exec communications-stack-asterisk-1 asterisk -C /run/asterisk/etc/asterisk.conf -rx 'dialplan show 700@default' 2>/dev/null | grep -q sub-page && ok "Asterisk is up with the paging dialplan after the restore" || bad "Asterisk is up with the paging dialplan after the restore"
+for _ in $(seq 1 20); do docker exec ${PROJECT}-asterisk-1 asterisk -C /run/asterisk/etc/asterisk.conf -rx 'core show version' 2>/dev/null | grep -q 'Asterisk 22' && break; sleep 2; done
+docker exec ${PROJECT}-asterisk-1 asterisk -C /run/asterisk/etc/asterisk.conf -rx 'dialplan show 700@default' 2>/dev/null | grep -q sub-page && ok "Asterisk is up with the paging dialplan after the restore" || bad "Asterisk is up with the paging dialplan after the restore"
 
 # clean up the markers and test archives
 TOKEN="$(login)"

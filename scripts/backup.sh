@@ -17,6 +17,8 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 cd "$(dirname "$0")/.."
+# Compose project name (default matches docker-compose.yml); override to test a second copy side by side.
+PROJECT="${COMPOSE_PROJECT_NAME:-communications-stack}"; export COMPOSE_PROJECT_NAME="$PROJECT"
 
 INCLUDE_ENV=0
 OUT_DIR="backups"
@@ -36,7 +38,7 @@ die() { printf '[backup] ERROR: %s\n' "$*" >&2; exit 1; }
 [ -f .env ] || die ".env not found"
 env_value() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
 PGUSER="$(env_value POSTGRES_USER)"; PGDB="$(env_value POSTGRES_DB)"
-AST_VOLUME="communications-stack_asterisk_data"
+AST_VOLUME="${PROJECT}_asterisk_data"
 
 docker compose ps --format '{{.Service}} {{.State}}' | grep -q '^database running$' || die "the database service is not running"
 docker volume inspect "$AST_VOLUME" >/dev/null 2>&1 || die "volume $AST_VOLUME not found"

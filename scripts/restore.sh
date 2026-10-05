@@ -16,6 +16,8 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 cd "$(dirname "$0")/.."
+# Compose project name (default matches docker-compose.yml); override to test a second copy side by side.
+PROJECT="${COMPOSE_PROJECT_NAME:-communications-stack}"; export COMPOSE_PROJECT_NAME="$PROJECT"
 
 ARCHIVE=""; ASSUME_YES=0; SAFETY=1; RESTORE_ENV=0
 while [ $# -gt 0 ]; do
@@ -40,7 +42,7 @@ die() { printf '[restore] ERROR: %s\n' "$*" >&2; exit 1; }
 
 env_value() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
 PGUSER="$(env_value POSTGRES_USER)"; PGDB="$(env_value POSTGRES_DB)"
-AST_VOLUME="communications-stack_asterisk_data"
+AST_VOLUME="${PROJECT}_asterisk_data"
 HOST="$(env_value SERVER_HOSTNAME)"
 
 umask 077

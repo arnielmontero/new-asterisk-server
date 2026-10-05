@@ -6,6 +6,8 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 cd "$(dirname "$0")/.."
+# Compose project name (default matches docker-compose.yml); override to test a second copy side by side.
+PROJECT="${COMPOSE_PROJECT_NAME:-communications-stack}"; export COMPOSE_PROJECT_NAME="$PROJECT"
 
 env_value() { grep -E "^$1=" .env | tail -n1 | cut -d= -f2-; }
 
@@ -13,7 +15,7 @@ SRC="$(pwd)/backend"
 if command -v cygpath >/dev/null 2>&1; then SRC="$(cygpath -m "$SRC")"; fi
 
 NETWORK="$(docker compose config --format json | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin)["networks"].values()))["name"])' 2>/dev/null || true)"
-NETWORK="${NETWORK:-communications-stack_internal}"
+NETWORK="${NETWORK:-${PROJECT}_internal}"
 
 docker compose up -d --wait database >/dev/null
 
