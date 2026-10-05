@@ -1,5 +1,6 @@
 import { h } from '../dom.js';
 import { primeAudio } from '../ringtone.js';
+import { microphoneErrorMessage } from '../mic-errors.js';
 
 /**
  * First-use gate: browsers will not let a page use the microphone or play audio
@@ -34,12 +35,7 @@ export function setupView({ user, onReady }) {
       await settle(audio.play(), 500); // nothing to play yet; the gesture itself unlocks later playback
       onReady();
     } catch (err) {
-      const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
-      status.textContent = denied
-        ? 'Microphone access was denied. Click the lock/camera icon in the address bar, allow the microphone for this site, then try again.'
-        : err && err.name === 'NotFoundError'
-          ? 'No microphone was found. Connect a headset or microphone, then try again.'
-          : `Could not enable audio: ${err?.message || 'unknown error'}`;
+      status.textContent = microphoneErrorMessage(err);
       status.hidden = false;
       button.disabled = false;
     }

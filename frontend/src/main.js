@@ -150,9 +150,13 @@ setUnauthorizedHandler(() => {
 function connectSocket() {
   socket = io({ path: '/socket.io', transports: ['websocket', 'polling'], reconnectionDelayMax: 5000 });
   socket.on('connect', () => store.set({ socketConnected: true }));
-  socket.on('disconnect', () => store.set({ socketConnected: false }));
+  socket.on('disconnect', () => {
+    store.set({ socketConnected: false });
+    api('GET', '/auth/me').catch(() => {}); // find out whether the whole backend is unreachable
+  });
   socket.on('connect_error', (err) => {
     store.set({ socketConnected: false });
+    if (store.state.backendOk) api('GET', '/auth/me').catch(() => {});
     // If the session is gone this call returns 401 and the unauthorised handler logs out.
     if (err.message === 'unauthorized') api('GET', '/auth/me').catch(() => {});
   });
@@ -190,7 +194,7 @@ async function start(user) {
   refreshTimer = setInterval(() => api('POST', '/auth/refresh').catch(() => {}), 5 * 60 * 1000);
   // While the backend is unreachable keep probing so the banner clears on its own.
   clearInterval(healthTimer);
-  healthTimer = setInterval(() => { if (!store.state.backendOk) api('GET', '/auth/me').catch(() => {}); }, 5000);
+  healthTimer = setInterval(() => { if (!store.state.backendOk || !store.state.socketConnected) api('GET', '/auth/me').catch(() => {}); }, 5000);
 
   if (canUseSoftphone(user) && !store.state.audioReady) {
     showScreen(setupView({ user, onReady: () => { store.set({ audioReady: true }); beginApp(user); } }));

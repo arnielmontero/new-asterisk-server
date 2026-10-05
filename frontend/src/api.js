@@ -29,12 +29,15 @@ export async function api(method, path, body) {
     store.set({ backendOk: false });
     throw new ApiError(0, 'backend_unavailable', 'Cannot reach the server. Check your network connection; retrying automatically.');
   }
-  if (!store.state.backendOk) store.set({ backendOk: true });
-
   let data = null;
   try {
     data = await res.json();
   } catch { /* empty body */ }
+
+  // A gateway error without the backend's own JSON error body comes from Nginx: the backend
+  // itself is down or unreachable. (The backend's own 503s, e.g. telephony unavailable, carry a code.)
+  const gatewayFailure = (res.status === 502 || res.status === 503 || res.status === 504) && !data?.error?.code;
+  if (store.state.backendOk === gatewayFailure) store.set({ backendOk: !gatewayFailure });
 
   if (!res.ok) {
     const err = data?.error || {};

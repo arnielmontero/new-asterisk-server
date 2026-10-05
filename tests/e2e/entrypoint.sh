@@ -4,4 +4,4 @@ set -eu
 mkdir -p "$HOME/.pki/nssdb"
 certutil -N -d "sql:$HOME/.pki/nssdb" --empty-password
 certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n lan-ca -i /certs/LAN_CA.crt
-exec node --test --test-timeout=240000 "$@" e2e.test.js
+exec node --test --test-timeout="${TEST_TIMEOUT:-240000}" "$@" "${TEST_FILE:-e2e.test.js}"

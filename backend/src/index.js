@@ -75,8 +75,13 @@ async function main() {
     }, 10000);
     force.unref();
     try {
-      await new Promise((resolve) => server.close(resolve)); // stop accepting new requests
-      socketApi.io.close();
+      // Stop accepting new requests, then drop the live Socket.IO/keep-alive connections: server.close()
+      // alone only resolves once every connection has ended, which never happens while browsers are connected.
+      const httpClosed = new Promise((resolve) => server.close(() => resolve()));
+      server.closeIdleConnections?.();
+      await new Promise((resolve) => socketApi.io.close(() => resolve()));
+      server.closeAllConnections?.();
+      await httpClosed;
       await ami.stop();
       await db.close();
       logger.info('shutdown complete');

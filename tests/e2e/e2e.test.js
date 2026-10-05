@@ -550,6 +550,135 @@ describe('browser acceptance', { concurrency: false }, () => {
     await viewer.browser.close();
   });
 
+  test('admin pages in a real browser: create / edit / disable / delete a user, protected last admin, audit filters, system status', async () => {
+    const adm = await launchOperator({ username: 'admin', role: 'admin', extension: null, tone: 440 });
+    await adm.page.goto(`${BASE}/`);
+    await adm.page.fill('#username', 'admin');
+    await adm.page.fill('#password', ADMIN_PASSWORD);
+    await adm.page.click('button[type=submit]');
+    await adm.page.waitForSelector('article[data-extension="1001"]');
+    const nav = await adm.page.locator('nav').innerText();
+    assert.match(nav, /Users/); assert.match(nav, /Audit log/); assert.match(nav, /System/);
+    // an operator does not even get the admin links
+    assert.doesNotMatch(await A.page.locator('nav').innerText(), /Users|Audit log|System/);
+
+    // --- Users
+    await adm.page.goto(`${BASE}/#/users`);
+    await adm.page.waitForSelector('tr[data-username="e2e.office"]');
+    const name = 'e2e.formuser';
+    await adm.page.fill('input[name=username]', name);
+    await adm.page.fill('input[name=password]', 'short');
+    await adm.page.click('button:has-text("Create user")');
+    await adm.page.waitForSelector('.form-error:not([hidden])');
+    assert.equal(await adm.page.locator(`tr[data-username="${name}"]`).count(), 0, 'a weak password is refused');
+    await adm.page.fill('input[name=password]', 'Form-Created-Passw0rd!');
+    await adm.page.click('button:has-text("Create user")');
+    await adm.page.waitForSelector(`tr[data-username="${name}"]`);
+    assert.match(await adm.page.locator(`tr[data-username="${name}"]`).innerText(), /operator.*Active/s);
+    // duplicate username
+    await adm.page.fill('input[name=username]', name);
+    await adm.page.fill('input[name=password]', 'Form-Created-Passw0rd!');
+    await adm.page.click('button:has-text("Create user")');
+    await adm.page.waitForFunction(() => /exist|taken|already/i.test(document.querySelector('.form-error:not([hidden])')?.textContent || ''), null, { timeout: 8000 });
+    // edit: change role and disable the account
+    await adm.page.locator(`tr[data-username="${name}"] button:has-text("Edit")`).click();
+    await adm.page.locator('.dialog select').first().selectOption('user');
+    await adm.page.locator('.dialog input[type=checkbox]').uncheck();
+    await adm.page.click('.dialog button:has-text("Save")');
+    await adm.page.waitForFunction((n) => /user.*Disabled/s.test(document.querySelector(`tr[data-username="${n}"]`)?.textContent || ''), name, { timeout: 8000 });
+    const login = await request.newContext({ baseURL: BASE });
+    const denied = await login.post('/api/auth/login', { data: { username: name, password: 'Form-Created-Passw0rd!' } });
+    assert.ok([401, 403].includes(denied.status()), `a disabled account cannot log in (got ${denied.status()})`);
+    await login.dispose();
+    // delete
+    adm.page.once('dialog', (d) => d.accept());
+    await adm.page.locator(`tr[data-username="${name}"] button:has-text("Delete")`).click();
+    await adm.page.waitForFunction((n) => !document.querySelector(`tr[data-username="${n}"]`), name, { timeout: 8000 });
+    // the last active administrator cannot be deleted
+    adm.page.once('dialog', (d) => d.accept());
+    await adm.page.locator('tr[data-username="admin"] button:has-text("Delete")').click();
+    await adm.page.waitForSelector('.toast.error');
+    assert.equal(await adm.page.locator('tr[data-username="admin"]').count(), 1, 'the last admin is still there');
+
+    // --- Audit log
+    await adm.page.goto(`${BASE}/#/audit`);
+    await adm.page.waitForSelector('table.data tbody tr');
+    await adm.page.fill('input[placeholder^="action"]', 'user.create');
+    await adm.page.locator('input[placeholder^="action"]').dispatchEvent('change');
+    await adm.page.waitForFunction(() => { const r = [...document.querySelectorAll('table.data tbody tr')]; return r.length > 0 && r.every((x) => x.children[2].textContent === 'user.create'); }, null, { timeout: 8000 });
+    assert.match(await adm.page.locator('table.data tbody').innerText(), new RegExp(name.replace('.', '\\.')));
+    await adm.page.fill('input[placeholder^="action"]', '');
+    await adm.page.locator('input[placeholder^="action"]').dispatchEvent('change');
+    await adm.page.selectOption('select', 'failure');
+    await adm.page.waitForFunction(() => { const r = [...document.querySelectorAll('table.data tbody tr')]; return r.length > 0 && r.every((x) => x.children[5].textContent === 'failure'); }, null, { timeout: 8000 });
+    assert.match(await adm.page.locator('.pager').innerText(), /Page 1 of \d+/);
+
+    // --- System status
+    await adm.page.goto(`${BASE}/#/system`);
+    await adm.page.waitForFunction(() => document.querySelectorAll('.cards .card').length >= 5, null, { timeout: 10000 });
+    const cards = await adm.page.locator('.cards .card').allInnerTexts();
+    for (const title of ['Backend', 'Database', 'Asterisk AMI', 'Asterisk', 'Live updates']) {
+      const card = cards.find((c) => c.startsWith(title) && (title !== 'Asterisk' || !c.startsWith('Asterisk AMI')));
+      assert.ok(card && /OK/.test(card), `system card "${title}" reports OK: ${JSON.stringify(card)}`);
+    }
+    assert.match(await adm.page.locator('main').innerText(), /1001 Office[\s\S]*Online/);
+    assert.deepEqual(adm.problems, []);
+    await adm.browser.close();
+  });
+
+  test('microphone problems (denied, missing, busy, refused): a clear message each time, the button is usable again, no softphone starts', async () => {
+    const browser = await chromium.launch({ args: FLAGS });
+    open.push(browser);
+    const context = await browser.newContext({ permissions: ['microphone'] });
+    // Make getUserMedia fail with exactly the DOMException a real browser throws.
+    await context.addInitScript(() => {
+      window.__gumError = 'NotAllowedError';
+      navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('simulated', window.__gumError));
+    });
+    const page = await context.newPage();
+    await page.goto(`${BASE}/`);
+    await page.fill('#username', USERS.office.username);
+    await page.fill('#password', PASSWORD);
+    await page.click('button[type=submit]');
+    const button = page.getByRole('button', { name: 'Enable microphone and audio' });
+    const cases = [
+      ['NotAllowedError', /microphone access was denied.*allow the microphone/i],
+      ['NotFoundError', /no microphone was found/i],
+      ['NotReadableError', /in use by another application/i],
+      ['NotSupportedError', /refused microphone access/i],
+    ];
+    for (const [name, expected] of cases) {
+      await page.evaluate((n) => { window.__gumError = n; }, name);
+      await button.click();
+      await page.waitForFunction((src) => new RegExp(src, 'i').test(document.querySelector('.form-error:not([hidden])')?.textContent || ''), expected.source, { timeout: 8000 });
+      assert.equal(await button.isDisabled(), false, `${name}: the user can try again`);
+      assert.equal(await page.locator('#chip-sip').count(), 0, `${name}: no softphone was started`);
+    }
+    await browser.close();
+  });
+
+  test('audio playback blocked by the browser: warning banner, then "Click to enable sound" restores the audio', async () => {
+    // Simulate the autoplay policy rejecting audio.play() in A's page only.
+    await A.page.evaluate(() => {
+      window.__origPlay = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = () => Promise.reject(new DOMException('blocked by autoplay policy', 'NotAllowedError'));
+    });
+    await B.page.fill('#dial', '1001');
+    await B.page.click('#dial-call');
+    await waitBanner(A.page, /Incoming call/);
+    await A.page.click('#answer');
+    await waitBanner(A.page, /Connected/);
+    await A.page.waitForFunction(() => /blocked audio playback/i.test(document.body.innerText), null, { timeout: 8000 });
+    await A.page.evaluate(() => { HTMLMediaElement.prototype.play = window.__origPlay; });
+    await A.page.click('button:has-text("Click to enable sound")');
+    await A.page.waitForFunction(() => !/blocked audio playback/i.test(document.body.innerText), null, { timeout: 8000 });
+    const heard = await hear(A.page, { waitFor: 'a880' });
+    assert.ok(heard.a880 > PRESENT, `after unblocking, A hears B (${heard.a880.toFixed(3)})${D(heard)}`);
+    await B.page.click('#hangup');
+    await noCall(A.page);
+    await noCall(B.page);
+  });
+
   test('closing a browser takes its extension Offline on the other dashboard in real time (test 23)', async () => {
     await B.page.close();
     await waitState(A.page, '1002', 'Offline', 45000);
