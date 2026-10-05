@@ -11,12 +11,12 @@ class AuditService {
    * an audit row must not turn a successful telephony action into an error.
    */
   async log({ user, username, action, target = null, ip = null, status = 'success', details = null }) {
-    try {
-      await this.db.query(
+    const insert = (userId) =>
+      this.db.query(
         `INSERT INTO audit_logs (user_id, username, action, target, ip_address, status, details)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
-          user?.id ?? null,
+          userId,
           username ?? user?.username ?? null,
           action,
           target,
@@ -25,7 +25,19 @@ class AuditService {
           details ? JSON.stringify(details) : null,
         ],
       );
+    try {
+      await insert(user?.id ?? null);
     } catch (err) {
+      if (err.code === '23503' && user?.id) {
+        // The user was deleted while this event was in flight: keep the record, keep the username snapshot.
+        try {
+          await insert(null);
+          return;
+        } catch (retryErr) {
+          this.logger.error({ err: retryErr.message, action }, 'FAILED TO WRITE AUDIT RECORD');
+          return;
+        }
+      }
       this.logger.error({ err: err.message, action }, 'FAILED TO WRITE AUDIT RECORD');
     }
   }

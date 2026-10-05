@@ -5,7 +5,7 @@ Update this file as work lands. Status is only moved to `PASS` after the behavio
 
 **Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done and verified · `MANUAL REQUIRED` needs hardware/human · `BLOCKED` cannot proceed (reason noted)
 
-**Last updated:** 2026-10-05 (Phase 1 verified)
+**Last updated:** 2026-10-05 (Phase 2 verified incl. 15x15 browser E2E; Phase 3 in progress: stack test, backup/restore, docs done)
 
 ---
 
@@ -13,10 +13,10 @@ Update this file as work lands. Status is only moved to `PASS` after the behavio
 
 | Phase | Scope | Spec priority steps (§78) | Done | Status |
 |-------|-------|---------------------------|------|--------|
-| 1 | Foundation & Telephony Core | 1–4 | 21 / 27 (+6 partial) | Core verified; backend/frontend compose services and DTLS handshake pending |
-| 2 | Application: Backend, Frontend, Calls & Paging | 5–11 | 0 / 37 | Not started |
-| 3 | Hardening, Validation & Delivery | 12–17 | 0 / 24 | Not started |
-| | **Total** | | **21 / 88** | |
+| 1 | Foundation & Telephony Core | 1–4 | 26 / 27 (+1 partial) | Verified; only the negative health-check case is not exercised |
+| 2 | Application: Backend, Frontend, Calls & Paging | 5–11 | 36 / 38 (+2 partial) | Verified: 143 backend + 6 frontend tests, 15x15 browser E2E; admin pages and some error banners not browser-tested |
+| 3 | Hardening, Validation & Delivery | 12–17 | 15 / 24 (+2 partial) | In progress: stack test, backup/restore, docs done; physical phone, real-LAN firewall, secrets scan, final report open |
+| | **Total** | | **77 / 89** | |
 
 Phase gate rule (§78): do not start the next phase while the previous phase's exit criteria are failing.
 
@@ -27,10 +27,10 @@ Phase gate rule (§78): do not start the next phase while the previous phase's e
 Goal: a running, pinned Asterisk 22 LTS container that accepts SIP (UDP) and WebRTC (WS) registrations for 1001/1002 and answers the echo test, with TLS material generated.
 
 ### 1.1 Repository & Docker foundation (§54, §55, §70)
-- [~] Project structure — `asterisk/`, `scripts/` exist; `backend/` and `frontend/` are created in Phase 2
+- [x] Project structure — `asterisk/`, `scripts/` exist; `backend/` and `frontend/` are created in Phase 2
 - [x] `.gitignore` (env, keys, certs, dumps, logs, node_modules) + `.gitattributes` (LF for scripts/configs)
 - [x] `.env.example` with all variables from §55 (+ RTP range, LAN subnet, proxy ACL, phone passwords); `scripts/init-env.sh` generates a `.env` with random secrets
-- [~] `docker-compose.yml`: 4 services, `restart: unless-stopped`, healthchecks, pinned images, `host-gateway` mapping — asterisk + database run and are healthy; backend/frontend are defined but untested until Phase 2
+- [x] `docker-compose.yml`: 4 services, `restart: unless-stopped`, healthchecks, pinned images, `host-gateway` mapping — asterisk + database run and are healthy; backend/frontend are defined but untested until Phase 2
 - [x] `docker compose config` validates
 
 ### 1.2 Asterisk exact pinned build (§7, §8)
@@ -44,7 +44,7 @@ Goal: a running, pinned Asterisk 22 LTS container that accepts SIP (UDP) and Web
 ### 1.3 Base Asterisk config (§9–§12, §25–§26)
 - [x] `asterisk.conf`, `modules.conf`, `logger.conf` (startup log clean: only the benign "no music on hold" warning remains)
 - [x] `http.conf` — plain WS on `0.0.0.0:8088`; `http show status` lists `/ws`
-- [x] `rtp.conf` — explicit range 10000–10200, strict RTP, ICE
+- [x] `rtp.conf` — explicit range 10100–10300, strict RTP, ICE
 - [x] `manager.conf` — dedicated AMI user, least privilege (read `system,call`; write `system,call,command,originate`), ACL
 - [x] Config templating: secrets come from env, rendered into `/run/asterisk/etc` at start (never written to the host)
 
@@ -55,7 +55,7 @@ Goal: a running, pinned Asterisk 22 LTS container that accepts SIP (UDP) and Web
 - [x] Physical phone profile (UDP, ulaw/alaw, no encryption) as `1001-phone` / `1002-phone`
 
 ### 1.5 Basic dialplan (§33, §41)
-- [~] 1001 ↔ 1002 direct dial, 30 s timeout — dialplan loaded and inspected; calls between two registered clients are tested in Phase 2
+- [x] 1001 ↔ 1002 direct dial, 30 s timeout — dialplan loaded and inspected; calls between two registered clients are tested in Phase 2
 - [x] 600 Echo test (Answer / Echo / Hangup) — verified with a real SIP client (see exit criteria)
 
 ### 1.6 Certificates (§12, §15, §53) — script only; hardening in Phase 3
@@ -64,7 +64,7 @@ Goal: a running, pinned Asterisk 22 LTS container that accepts SIP (UDP) and Web
 ### Phase 1 exit criteria
 - [x] Asterisk container `healthy`; `core show version` → Asterisk 22.11.0
 - [x] `pjsip show transports` lists UDP + WS; `pjsip show endpoints` lists 1001, 1002, 1001-phone, 1002-phone
-- [~] `http show status` shows `/ws` on 8088; DTLS cert/key load without error at startup — an actual DTLS handshake needs a browser (Phase 2/3)
+- [x] `http show status` shows `/ws` on 8088; DTLS cert/key load without error at startup — an actual DTLS handshake needs a browser (Phase 2/3)
 - [x] Real SIP client (baresip, UDP) registered as `1001-phone`, called 600, and the received audio was the 440 Hz tone it sent (RMS 8491, tone/off-tone power ratio ≈ 1e9, ~64 kbit/s RTP both ways). Wrong password and unknown user were rejected; AMI login works from a permitted network, fails with wrong credentials, and is refused from a non-permitted source
 
 ---
@@ -74,53 +74,54 @@ Goal: a running, pinned Asterisk 22 LTS container that accepts SIP (UDP) and Web
 Goal: authenticated dashboard with real-time extension state, softphone, normal calls, and live one-way paging with browser auto-answer.
 
 ### 2.1 Backend core — PostgreSQL / auth / RBAC (§17–§24, §46, §49–§50)
-- [ ] Express app, modular layout (auth, users, extensions, paging, calls, audit, ami, database, socket, health, validation)
-- [ ] DB connection with retry; versioned idempotent migrations
-- [ ] `users` + `audit_logs` tables, indexes, FKs
-- [ ] Admin bootstrap from `ADMIN_PASSWORD` (idempotent, no overwrite, not logged)
-- [ ] `POST /api/auth/login` — JWT, Argon2id/bcrypt, rate limit, HttpOnly cookie handling documented
-- [ ] RBAC middleware (admin / operator / user) enforced server-side
-- [ ] User CRUD `GET/POST/PATCH/DELETE /api/users` + last-admin protection
-- [ ] Input validation library, body-size limit, safe errors (no stack traces)
-- [ ] Structured logging with secret redaction
-- [ ] Audit logging for all events listed in §32
+- [x] Express app, modular layout (auth, users, extensions, paging, calls, audit, ami, database, socket, health, validation, system)
+- [x] DB connection with retry; versioned, checksummed, advisory-locked idempotent migrations (tested: fresh DB, re-run, concurrent start, tamper detection, rollback)
+- [x] `users` + `audit_logs` tables, indexes, FKs; audit table is append-only enforced by PostgreSQL triggers
+- [x] Admin bootstrap from `ADMIN_PASSWORD` (idempotent, never overwrites, value never logged — verified: none of the 8 secrets appear in any container log)
+- [x] `POST /api/auth/login` — bcrypt cost 12, JWT HS256 with issuer/audience/expiry, per-IP+username rate limit, HttpOnly SameSite=Strict cookie (documented in README in 3.6)
+- [x] RBAC middleware (admin / operator / user) enforced server-side; role read from DB per request, so demotion/deactivation is immediate
+- [x] User CRUD `GET/POST/PATCH/DELETE /api/users` + last-admin protection (incl. concurrent-demotion race)
+- [x] Input validation (zod, strict schemas), 10 kB body limit, safe errors (no stack traces)
+- [x] Structured logging (pino) with secret redaction
+- [x] Audit logging for every event in §32 (login ok/fail, user create/update/delete, originate, paging request/success/failure/end/cancel, bootstrap)
 
 ### 2.2 AMI integration & real-time state (§25, §27–§29, §58, §69)
-- [ ] AMI client: auth, events, exponential backoff, reset on success, state exposed
-- [ ] Extension state derived from real AMI events (ContactStatus, DeviceStateChange, DialBegin/End, Bridge*, Hangup)
-- [ ] Normalized states: Online / Offline / In-Call / Paging
-- [ ] Socket.IO with authenticated connections; events per §28 documented
-- [ ] `GET /health` reflects DB **and** AMI honestly (degraded when AMI down)
-- [ ] Graceful shutdown (HTTP, Socket.IO, AMI, DB)
+- [x] AMI client: auth, events, ActionID correlation, ping-based dead-link detection, exponential backoff (reset on success), state exposed — unit-tested against a mock AMI server (drop, outage, half-open link, bad credentials, stop)
+- [x] Extension state derived from real AMI events (ContactStatus, DeviceStateChange, DialEnd, Newchannel, Hangup, dialplan UserEvents) plus a sync on connect
+- [x] Normalized states: Online / Offline / In-Call / Paging (and "Unknown" while AMI is down — never guessed)
+- [x] Socket.IO with authenticated connections (cookie, bearer or handshake token); events documented in `src/socket/index.js`
+- [x] `GET /health` reflects DB **and** AMI honestly (200 only when both healthy; 503 degraded/down otherwise); `/health/live` is liveness only
+- [x] Graceful shutdown (HTTP, Socket.IO, AMI, DB) — verified: SIGTERM → "shutdown complete" in the container logs
 
 ### 2.3 Frontend SPA & softphone (§35–§40, §65, §67–§68)
-- [ ] Pin SIP.js (or JsSIP) exact version
-- [ ] Login page; first-use "Enable Microphone / Audio" gate
-- [ ] Dashboard: 1001/1002 state, call/hangup, paging buttons (role-aware)
-- [ ] Softphone: register (WSS), call, incoming answer/reject/hangup, call state, echo test
-- [ ] SIP registration state shown separately from dashboard login
-- [ ] User management page, audit log page, system status page (admin)
-- [ ] Error handling for all cases in §67; reconnect behavior
-- [ ] Nginx: HTTPS, HTTP→HTTPS, `/api`, `/socket.io`, `/ws` proxy, security headers, `ASTERISK_HOST` templating (§13, §14, §47)
+- [x] SIP.js pinned to exactly 0.21.2 (plus socket.io-client 4.8.4, esbuild 0.28.2; lockfiles committed)
+- [x] Login page; first-use "Enable microphone and audio" gate (secure-context check, mic-denied and no-mic messages)
+- [x] Dashboard: 1001/1002 live state, call/hang-up, paging buttons (role-aware); read-only role verified in a real browser
+- [x] Softphone: register (WSS), call, incoming answer/reject/hang-up, mute, call state, echo test — verified in Chromium
+- [x] SIP registration state shown separately from dashboard login (header chip + softphone panel)
+- [~] User management, audit log and system status pages are built; only exercised through the API so far (no browser test for these three pages yet)
+- [~] Error handling per §67: login failure, call failure/reject, paging failure, unauthorised direct page, AMI-down banner are implemented/tested; mic-denied, audio-blocked and backend-restart banners are implemented but not yet exercised in a browser
+- [x] Nginx: HTTPS (TLS 1.2/1.3), HTTP→HTTPS 301, `/api`, `/socket.io`, `/ws` proxy, security headers (CSP, nosniff, frame, referrer, permissions-policy), `ASTERISK_HOST` templating, lazy backend resolution
 
 ### 2.4 Normal calling (§30)
-- [ ] `POST /api/originate` — strict validation, configured extensions only, audited
-- [ ] Browser 1001 ↔ 1002 manual-answer two-way calls
+- [x] `POST /api/originate` — strict validation, configured extensions only, fixed AMI action, audited (incl. async result); `POST /api/hangup`
+- [x] Browser 1001 ↔ 1002 manual-answer two-way calls — verified in both directions by measuring decoded audio tones
 
 ### 2.5 Paging (§4, §5, §31, §33–§35)
-- [ ] Audio-source architecture implemented: dashboard → backend authorize+audit → operator's browser SIP call → paging extension → `Page()`
-- [ ] `POST /api/page` (700/701/702 only), concurrency guard, audit
-- [ ] Version-correct `Page()` dialplan + pre-dial handler with `PJSIP_HEADER()`
-- [ ] Outgoing INVITE carries `X-Paging-Call: true`, `Call-Info` auto-answer, `P-Asserted-Identity`
-- [ ] Self-page prevention (initiator excluded from group)
-- [ ] Browser auto-answer gated on **all** conditions (known group + `X-Paging-Call` + `answer-after=0`)
-- [ ] One-way audio (recipients cannot talk back)
-- [ ] `paging.started` / `paging.ended` events reach dashboard
+- [x] Audio-source architecture: dashboard → backend authorises + audits (single-use AstDB grant) → operator's browser places the SIP call with its microphone → dialplan checks the grant → `Page()`
+- [x] `POST /api/page` (700/701/702 only), concurrency guard (one page at a time), audit, 20 s grant expiry, admin force-end
+- [x] Version-correct `Page()` dialplan (22.11.0) with `b()` pre-dial handler setting headers via `PJSIP_HEADER()` and the caller identity via `CONNECTEDLINE()`
+- [x] Outgoing INVITE carries `X-Paging-Call: true`, `Call-Info: <sip:host>;answer-after=0`, `P-Asserted-Identity`, From `Paging <sip:700@…>` — captured both in Asterisk's SIP trace and as received by the browser over WSS
+- [x] Self-page prevention (initiator excluded from targets; paging a group you are the only member of is refused 422)
+- [x] Browser auto-answer gated on **all** conditions (known group + `X-Paging-Call` exactly `true` + `answer-after=0`); unit-tested exhaustively and verified: ordinary calls still ring
+- [x] One-way audio verified by measurement: recipient hears the operator, operator hears nothing back (with RTP flowing)
+- [x] `paging.started` / `paging.ended` / `paging.failed` events reach the dashboard; dead-media timeout (30 s) and 5-minute page cap stop stuck pages
 
 ### Phase 2 exit criteria
-- [ ] Backend test suite green (auth, RBAC, users, calls, paging, DB, health)
-- [ ] Browser can register as 1001 and 1002 over WSS
-- [ ] INVITE headers for paging captured from a real SIP trace
+- [x] Backend test suite green: 143 tests (auth, RBAC, users, calls, paging, DB, health, AMI client, state, Socket.IO)
+- [x] Browser registers as 1001 and 1002 over WSS and is accepted by Asterisk
+- [x] INVITE headers for paging captured from a real SIP trace
+- [x] Browser E2E suite (15 tests) passes: 15 consecutive full runs, 225/225 tests, 0 failures after the RTP-port fix (see Decisions & open items)
 
 ---
 
@@ -134,33 +135,33 @@ Goal: secure, backed-up, tested, documented, and honestly verified end to end.
 
 ### 3.2 TLS / PKI / security hardening (§15, §16, §43, §45–§48)
 - [ ] Generated certs verified: SANs, permissions, repeat-safe, never committed
-- [ ] CSP / security headers don't break mic/WebRTC
-- [ ] Firewall rules documented (LAN-only; AMI, 8088, Postgres not exposed)
+- [x] CSP / security headers don't break mic/WebRTC
+- [~] Firewall rules documented (LAN-only; AMI, 8088, Postgres not exposed) — documented in DEPLOYMENT.md; NOT verified on a real Linux host (MANUAL REQUIRED, TESTING.md M3)
 - [ ] CORS same-origin; no wildcard
 - [ ] Secrets scan: nothing sensitive in logs or git
 
 ### 3.3 Backup & restore (§51–§52)
-- [ ] `scripts/backup.sh` (timestamped, secure perms, integrity check)
-- [ ] `scripts/restore.sh` (path validation, safeguards, health check after)
-- [ ] Backup and restore actually run on a test environment
+- [x] `scripts/backup.sh` (timestamped, secure perms, integrity check)
+- [x] `scripts/restore.sh` (path validation, safeguards, health check after)
+- [x] Backup and restore actually run on a test environment
 
 ### 3.4 Automated tests (§59–§60)
-- [ ] Backend: auth, RBAC, users, calls, paging, DB, health, AMI reconnect
-- [ ] Asterisk config tests: endpoints, dialplan, modules, transports
-- [ ] `scripts/test-stack.sh` covering all 17 checks in §60, non-zero exit on failure
+- [x] Backend: auth, RBAC, users, calls, paging, DB, health, AMI reconnect
+- [x] Asterisk config tests: endpoints, dialplan, modules, transports
+- [x] `scripts/test-stack.sh` covering all 17 checks in §60, non-zero exit on failure
 
 ### 3.5 Runtime / telephony acceptance (§61–§64, §75)
-- [ ] Real SIP signaling capture proves paging headers (§62)
-- [ ] Audio verified where possible (RTP packet/audio inspection); else `MANUAL REQUIRED` with exact steps
-- [ ] One-way paging verified behaviorally (§64)
-- [ ] Normal calls confirmed not auto-answering
-- [ ] Logs reviewed; errors fixed; failed tests repeated
+- [x] Real SIP signaling capture proves paging headers (§62)
+- [x] Audio verified where possible (RTP packet/audio inspection); else `MANUAL REQUIRED` with exact steps
+- [x] One-way paging verified behaviorally (§64)
+- [x] Normal calls confirmed not auto-answering
+- [~] Logs reviewed; errors fixed; failed tests repeated — logs reviewed for secrets (none) and errors; the browser E2E failure was root-caused and the suite repeated 15x; a final pass over every service log is still to do
 
 ### 3.6 Documentation (§71–§72)
-- [ ] `README.md` (architecture, requirements, install, JWT handling, pinned versions)
-- [ ] `DEPLOYMENT.md` (certs, DNS/hosts, firewall, browser + phone setup, backup/restore)
-- [ ] `TESTING.md` (procedures, MANUAL REQUIRED steps)
-- [ ] Troubleshooting + known browser/phone limitations
+- [x] `README.md` (architecture, requirements, install, JWT handling, pinned versions)
+- [x] `DEPLOYMENT.md` (certs, DNS/hosts, firewall, browser + phone setup, backup/restore)
+- [x] `TESTING.md` (procedures, MANUAL REQUIRED steps)
+- [x] Troubleshooting + known browser/phone limitations
 - [ ] Final completion report (§77)
 
 ### Phase 3 exit criteria
@@ -175,34 +176,34 @@ Status values: `NOT RUN` · `PASS` · `FAIL` · `MANUAL REQUIRED`. Evidence colu
 | # | Test | Phase | Status | Evidence |
 |---|------|-------|--------|----------|
 | 1 | Docker Compose config validates | 1 | PASS | `docker compose config -q` exit 0; 4 services, all `restart: unless-stopped`, no `latest` tags |
-| 2 | All required containers start | 1 | NOT RUN | asterisk + database start; backend/frontend do not exist yet |
-| 3 | All applicable healthchecks pass | 1–2 | NOT RUN | asterisk and database `healthy`; backend/frontend pending |
-| 4 | HTTPS works | 2 | NOT RUN | |
-| 5 | Browser trusts generated LAN CA after install | 3 | NOT RUN | |
-| 6 | `/health` reports healthy DB and AMI | 2 | NOT RUN | |
-| 7 | Administrator login works | 2 | NOT RUN | |
-| 8 | Invalid login fails | 2 | NOT RUN | |
-| 9 | RBAC works | 2 | NOT RUN | |
-| 10 | User management works | 2 | NOT RUN | |
-| 11 | 1001 WebRTC registration | 2 | NOT RUN | |
-| 12 | 1002 WebRTC registration | 2 | NOT RUN | |
-| 13 | 1001 → 1002 rings, two-way audio | 2 | NOT RUN | |
-| 14 | 1002 → 1001 rings, two-way audio | 2 | NOT RUN | |
-| 15 | 1001 → 600 real echo audio | 1–2 | NOT RUN | Echo verified over UDP with a SIP client (phone profile). Browser/WebRTC path still to be verified |
-| 16 | Page All works | 2 | NOT RUN | |
-| 17 | Page Office works | 2 | NOT RUN | |
-| 18 | Page Warehouse works | 2 | NOT RUN | |
-| 19 | Recipients auto-answer only with paging markers | 2 | NOT RUN | |
-| 20 | Normal calls do not auto-answer | 2 | NOT RUN | |
-| 21 | Paging is one-way | 3 | NOT RUN | |
-| 22 | Paging terminates cleanly | 3 | NOT RUN | |
-| 23 | Extension state updates in real time | 2 | NOT RUN | |
-| 24 | AMI disconnect/reconnect works (< 10 s) | 2–3 | NOT RUN | |
-| 25 | Audit records are created | 2 | NOT RUN | |
-| 26 | Invalid call/page destinations rejected | 2 | NOT RUN | |
-| 27 | PostgreSQL data persists after restart | 3 | NOT RUN | |
-| 28 | Backup completes successfully | 3 | NOT RUN | |
-| 29 | Restore completes in test environment | 3 | NOT RUN | |
+| 2 | All required containers start | 1 | PASS | `docker compose up -d`: asterisk, backend, database, frontend all running |
+| 3 | All applicable healthchecks pass | 1–2 | PASS | all four containers report `healthy` (asterisk: uptime+PJSIP+HTTP+AMI; backend: `/health`; database: `pg_isready`; frontend: HTTPS) |
+| 4 | HTTPS works | 2 | PASS | Chromium loads `https://communications.local` (TLS 1.2/1.3, LAN-CA-issued cert); HTTP→HTTPS 301 verified |
+| 5 | Browser trusts generated LAN CA after install | 3 | PASS | Chromium/Linux with the CA in its NSS store loads the site; the same browser without the CA refuses it (`ERR_CERT_AUTHORITY_INVALID`). Windows/macOS/Firefox/mobile install steps: MANUAL REQUIRED (to be documented) |
+| 6 | `/health` reports healthy DB and AMI | 2 | PASS | `GET /api/health` via Nginx → `{"status":"ok","checks":{"database":"ok","ami":"connected"}}`; 503 `degraded`/`down` paths unit-tested (live AMI-down check goes into `test-stack.sh`) |
+| 7 | Administrator login works | 2 | PASS | unit + live (`curl` over HTTPS); JWT issued, HttpOnly cookie set |
+| 8 | Invalid login fails | 2 | PASS | identical 401 for wrong password and unknown user; browser shows the error; rate limit 429 after repeated failures |
+| 9 | RBAC works | 2 | PASS | 36-case endpoint × role matrix (unauthenticated/user/operator/admin); read-only user verified in a real browser (UI hidden, API 403) |
+| 10 | User management works | 2 | PASS | API level: create/update/deactivate/delete, validation, duplicates, last-admin protection (unit + E2E). The admin web forms themselves are not yet browser-tested |
+| 11 | 1001 WebRTC registration | 2 | PASS | real Chromium registers over wss://…/ws (Nginx → Asterisk), REGISTER answered 200 OK; dashboard shows Online |
+| 12 | 1002 WebRTC registration | 2 | PASS | as above for 1002 |
+| 13 | 1001 → 1002 rings, two-way audio | 2 | PASS | INVITE has no paging markers; not auto-answered after 3.5 s; after manual answer 1001 hears only 880 Hz (1002's tone) and 1002 only 440 Hz. See the RTP-port finding in Decisions & open items. |
+| 14 | 1002 → 1001 rings, two-way audio | 2 | PASS | same measurement in the reverse direction. See the RTP-port finding in Decisions & open items. |
+| 15 | 1001 → 600 real echo audio | 1–2 | PASS | WebRTC: browser hears its own 440 Hz tone back and nothing else; also verified over UDP with a SIP client |
+| 16 | Page All works | 2 | PASS | recipient auto-answers, hears the operator's microphone tone; audit request/success/end rows written. See the RTP-port finding in Decisions & open items. |
+| 17 | Page Office works | 2 | PASS | 701 from 1002 reaches 1001 only; 701 from 1001 is refused (nobody else to page) |
+| 18 | Page Warehouse works | 2 | PASS | 702 from 1001 reaches 1002 only |
+| 19 | Recipients auto-answer only with paging markers | 2 | PASS | browser received `X-Paging-Call: true`, `Call-Info …;answer-after=0`, From 700 and answered by itself; gate unit-tested (each condition necessary; generic Call-Info insufficient) |
+| 20 | Normal calls do not auto-answer | 2 | PASS | ordinary INVITEs carry no paging headers and keep ringing until Answer is pressed (both directions) |
+| 21 | Paging is one-way | 3 | PASS | with RTP flowing (>20 packets) the operator hears neither the recipient's 880 Hz tone nor itself; recipient's controls are listen-only. Also enforced in Asterisk (muted ConfBridge participants, no `d` option) |
+| 22 | Paging terminates cleanly | 3 | PASS | End page releases the recipient; both dashboards return to Online; second page is refused while one is live; dead-media timeout and 5-min cap verified in config |
+| 23 | Extension state updates in real time | 2 | PASS | dashboards moved through Offline → Online → In-Call → Paging → Online and back to Offline when a browser closed, driven by AMI events over Socket.IO |
+| 24 | AMI disconnect/reconnect works (< 10 s) | 2–3 | PASS | `scripts/test-stack.sh` restarts Asterisk and measures from "AMI accepts connections" to `/health` `ami: connected`: **0.8 s** (limit 10 s); also covered by the mock-AMI drop/outage/half-open tests |
+| 25 | Audit records are created | 2 | PASS | login, user, originate, hangup, paging.request/success/end/failure/cancel rows verified in PostgreSQL and via the audit API; DB rejects UPDATE/DELETE/TRUNCATE |
+| 26 | Invalid call/page destinations rejected | 2 | PASS | 15 malformed originate bodies and 11 invalid page groups rejected with 400 and nothing sent to AMI; direct SIP dial of 700 without a grant refused by Asterisk |
+| 27 | PostgreSQL data persists after restart | 3 | PASS | `test-stack.sh`: user count identical before/after `docker compose restart database`, admin can still log in, backend `/health` recovers; named volume `pgdata` |
+| 28 | Backup completes successfully | 3 | PASS | `scripts/test-backup-restore.sh` (16/16, run repeatedly): archive with DB dump, Asterisk config + data, certs/keys, manifest + SHA256SUMS; integrity re-verified after writing; no `.env` unless `--include-env`. Archive mode 600 is not verifiable on this NTFS host (reported as NOTE, not as pass) |
+| 29 | Restore completes in test environment | 3 | PASS | same script: marker user created before the backup is back, user created after it is gone, audit log restored, admin login + `/health` + paging dialplan OK afterwards; safety backup taken first; a tampered archive is rejected before anything changes (live data untouched) |
 | 30 | Physical SIP phone tests | 3 | NOT RUN | |
 
 Tests 11–22 involve browser microphone/speaker and live audio; anything that cannot be driven or measured automatically stays `MANUAL REQUIRED` with exact steps in `TESTING.md`.
@@ -220,3 +221,9 @@ Tests 11–22 involve browser microphone/speaker and live audio; anything that c
 | 2026-10-05 | Config rendering | `./asterisk/config` holds templates mounted read-only; the entrypoint renders them with secrets into `/run/asterisk/etc` (tmpfs) and runs Asterisk with `-C`. CLI/healthcheck must pass `-C /run/asterisk/etc/asterisk.conf`. |
 | 2026-10-05 | `/var/lib/asterisk` volume | Hides image content on upgrade, so the entrypoint refreshes `documentation/` (required for the Opus module to register) from an image copy on each start. |
 | 2026-10-05 | Docker Desktop caveat confirmed | Host networking works but binds inside the Docker VM (eth0 192.168.65.3). Bridge containers reach Asterisk at the bridge gateway (e.g. 172.17.0.1), and `host.docker.internal` points at Windows, not the VM — set `ASTERISK_HOST` accordingly when testing on Windows. LAN/SIP-phone/browser tests from other devices need a Linux host or are `MANUAL REQUIRED`. |
+| 2026-10-05 | **Root cause of the intermittent browser E2E failure: RTP port 10080** | Chromium (and Firefox) refuse to send to their restricted "bad ports", and UDP **10080** is the only one inside the old RTP range 10000–10200. A call whose RTP landed there signalled fine, but the browser never sent a STUN/RTP packet and nothing arrived (ICE stuck in `checking`, 0 packets): about 1 call in 100 in production. Evidence: a packet capture inside the Docker VM showed Asterisk sending checks to the browser while **no** packet from that browser socket ever appeared; the failing pair was port 10080 in 5 of 5 captured cases; the kernel showed no socket behind the browser candidate. **Fix:** default range moved to **10100–10300**, and the Asterisk entrypoint refuses to start with a range containing a browser-restricted port. Result: 15 consecutive full E2E runs (225/225 tests) with no failure; before the fix 4 of 15 runs failed, and further runs failed in later batches. |
+| 2026-10-05 | Two "connected but silent" E2E failures not explained | Two earlier failures (RTP ports 10146 and 10142) had ICE connected and RTP flowing, but the decoded tone absent. They did **not** recur in the 15 runs after the fix, but the cause was not isolated: recorded as a possible rare residual, not as solved. On failure the test now records the operator microphone level, kernel socket state and every ICE pair, so a recurrence can be diagnosed. |
+| 2026-10-05 | ICE candidate truncation | Asterisk keeps only 16 local ICE candidates in unspecified order; with 34 interfaces in the Docker VM the reachable one randomly vanished. `ICE_PERMIT` (default `LAN_SUBNET`) now limits offered addresses via `ice_deny`/`ice_permit`. |
+| 2026-10-05 | Stuck calls after a browser dies | `rtp_timeout=30` hangs up a call with no media for 30 s; a page is capped at 5 minutes (`TIMEOUT(absolute)`). The audit writer retries with a null user when the user was deleted mid-page (FK violation). |
+| 2026-10-05 | Paging identity | `CALLERID()` had no effect on the outbound PJSIP From header; the paging identity (700/701/702) is set with `CONNECTEDLINE(num/name)` in `sub-page-prep`. |
+| 2026-10-05 | Windows host notes | Git Bash needs `MSYS_NO_PATHCONV=1`; the Windows curl returns exit 23 for `-o /dev/null` (scripts avoid it under `set -e`); a `tar` piped into `grep -q` under `pipefail` can die of SIGPIPE (fixed in restore.sh); file modes cannot be enforced on NTFS (backup/restore report this instead of claiming it). The test scripts need no Python. |

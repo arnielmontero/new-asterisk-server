@@ -42,8 +42,9 @@ services:
       SERVER_HOSTNAME: ${SERVER_HOSTNAME:?set SERVER_HOSTNAME in .env}
       LAN_SUBNET: ${LAN_SUBNET:?set LAN_SUBNET in .env}
       PROXY_PERMIT: ${PROXY_PERMIT:-172.16.0.0/12}
-      RTP_START: ${RTP_START:-10000}
-      RTP_END: ${RTP_END:-10200}
+      RTP_START: ${RTP_START:-10100}
+      RTP_END: ${RTP_END:-10300}
+      ICE_PERMIT: ${ICE_PERMIT:-${LAN_SUBNET}}
     volumes:
       # Config files are templates (read-only); the entrypoint renders them with
       # secrets into /run/asterisk/etc so secrets never land on the host disk.

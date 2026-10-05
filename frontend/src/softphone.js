@@ -43,7 +43,6 @@ export class Softphone {
       transportOptions: { server: `${scheme}://${location.host}/ws`, connectionTimeout: 8 },
       // LAN only: host candidates, no STUN/TURN.
       sessionDescriptionHandlerFactoryOptions: { peerConnectionConfiguration: { iceServers: [] } },
-      reconnectionAttempts: 0, // reconnection is handled below so the UI can show it
       logLevel: 'warn',
       delegate: {
         onInvite: (invitation) => this.onInvite(invitation),

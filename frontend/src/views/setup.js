@@ -7,6 +7,10 @@ import { primeAudio } from '../ringtone.js';
  * requests the microphone and unlocks audio playback; afterwards pages and calls
  * work without further prompts. It cannot be skipped or automated by the app.
  */
+// Audio unlocking is best-effort: AudioContext.resume() / audio.play() can stay pending on
+// devices with no audio output or no media loaded yet. Never let that block the flow.
+const settle = (promise, ms) => Promise.race([Promise.resolve(promise).catch(() => {}), new Promise((resolve) => setTimeout(resolve, ms))]);
+
 export function setupView({ user, onReady }) {
   const status = h('p', { class: 'form-error', role: 'alert', hidden: true });
   const button = h('button', { type: 'button', class: 'btn primary big' }, 'Enable microphone and audio');
@@ -24,10 +28,10 @@ export function setupView({ user, onReady }) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((t) => t.stop()); // permission is remembered; release the device
-      await primeAudio();
+      await settle(primeAudio(), 1500);
       const audio = document.getElementById('remote-audio');
       audio.muted = false;
-      try { await audio.play(); } catch { /* nothing to play yet; the gesture still unlocks playback */ }
+      await settle(audio.play(), 500); // nothing to play yet; the gesture itself unlocks later playback
       onReady();
     } catch (err) {
       const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');

@@ -9,12 +9,13 @@ RUN_DIR=/run/asterisk
 ETC_DIR="${RUN_DIR}/etc"
 KEY_DIR="${RUN_DIR}/keys"
 
-VARS='EXT_1001_PASSWORD EXT_1002_PASSWORD EXT_1001_PHONE_PASSWORD EXT_1002_PHONE_PASSWORD AMI_USER AMI_PASS AMI_PORT AMI_PERMIT SERVER_IP SERVER_HOSTNAME LAN_SUBNET PROXY_PERMIT RTP_START RTP_END'
+VARS='EXT_1001_PASSWORD EXT_1002_PASSWORD EXT_1001_PHONE_PASSWORD EXT_1002_PHONE_PASSWORD AMI_USER AMI_PASS AMI_PORT AMI_PERMIT SERVER_IP SERVER_HOSTNAME LAN_SUBNET PROXY_PERMIT RTP_START RTP_END ICE_PERMIT_LINES'
 
 fail() { echo "asterisk-entrypoint: $*" >&2; exit 1; }
 
 # Required variables must be present and non-empty.
 for v in $VARS; do
+  [ "$v" = "ICE_PERMIT_LINES" ] && continue
   eval "val=\${$v:-}"
   [ -n "$val" ] || fail "required environment variable $v is not set"
 done
@@ -30,6 +31,30 @@ printf '%s' "$AMI_USER" | grep -Eq '^[A-Za-z0-9_-]{1,32}$' || fail "AMI_USER has
 printf '%s' "$AMI_PORT" | grep -Eq '^[0-9]{2,5}$' || fail "AMI_PORT must be numeric"
 printf '%s' "$RTP_START" | grep -Eq '^[0-9]{4,5}$' || fail "RTP_START must be numeric"
 printf '%s' "$RTP_END" | grep -Eq '^[0-9]{4,5}$' || fail "RTP_END must be numeric"
+[ "$RTP_START" -lt "$RTP_END" ] || fail "RTP_START must be lower than RTP_END"
+# Browsers refuse to send to their restricted ports (Chromium/Firefox "bad ports"): a call whose RTP
+# lands there connects at SIP level but never gets media. Keep every such port out of the range.
+for p in 1719 1720 1723 2049 3659 4045 4190 5060 5061 6000 6566 6665 6666 6667 6668 6669 6679 6697 10080; do
+  if [ "$RTP_START" -le "$p" ] && [ "$p" -le "$RTP_END" ]; then
+    fail "RTP range $RTP_START-$RTP_END includes UDP port $p, which browsers refuse to send to (calls on it would have no audio); choose a range that excludes it, e.g. 10100-10300"
+  fi
+done
+# ICE_PERMIT: comma-separated CIDRs whose local Asterisk addresses are offered to clients as ICE
+# candidates. Asterisk keeps only the first 16 candidates it finds, so on a host with many
+# interfaces (Docker bridges, VPNs) an unrestricted list randomly drops the usable address and
+# media never connects. Defaults to LAN_SUBNET.
+ICE_PERMIT="${ICE_PERMIT:-$LAN_SUBNET}"
+ICE_PERMIT_LINES=""
+OLD_IFS="$IFS"; IFS=','
+for cidr in $ICE_PERMIT; do
+  cidr="$(printf '%s' "$cidr" | tr -d ' ')"
+  printf '%s' "$cidr" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$' || fail "ICE_PERMIT entry '$cidr' must be an IPv4 CIDR such as 192.168.1.0/24"
+  ICE_PERMIT_LINES="${ICE_PERMIT_LINES}ice_permit = ${cidr}
+"
+done
+IFS="$OLD_IFS"
+export ICE_PERMIT_LINES
+
 for v in AMI_PERMIT LAN_SUBNET PROXY_PERMIT; do
   eval "val=\${$v}"
   printf '%s' "$val" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$' \

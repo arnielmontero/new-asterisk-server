@@ -1,0 +1,12 @@
+{
+  "name": "communications-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-browser (Chromium) end-to-end tests: WebRTC registration, calls, echo, paging, audio direction",
+  "scripts": {
+    "test": "node --test e2e.test.js"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

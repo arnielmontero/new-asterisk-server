@@ -136,6 +136,11 @@ describe('database', () => {
     assert.equal(await auditCount(h.db, "action = 'test.owned' AND user_id IS NULL AND username = 'audited.user'"), 1);
   });
 
+  test('an audit event for a user deleted mid-flight is still recorded (user_id nulled, username kept)', async () => {
+    await h.audit.log({ user: { id: 987654321, username: 'ghost.user' }, action: 'test.ghost', target: 'x' });
+    assert.equal(await auditCount(h.db, "action = 'test.ghost' AND user_id IS NULL AND username = 'ghost.user'"), 1);
+  });
+
   test('updated_at is maintained on user updates', async () => {
     const u = await h.users.create({ username: 'timestamped', password: 'timestamp-passphrase-1', role: 'user', extension: null, is_active: true });
     await new Promise((r) => setTimeout(r, 20));
