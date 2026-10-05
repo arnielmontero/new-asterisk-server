@@ -1,0 +1,36 @@
+# Secrets and environment
+.env
+.env.*
+!.env.example
+
+# Private keys and generated certificates
+*.key
+*.pem
+*.crt
+*.csr
+*.srl
+asterisk/keys/*
+!asterisk/keys/.gitkeep
+certs/
+
+# Database dumps and backups
+*.sql
+*.dump
+backups/
+
+# Logs
+*.log
+logs/
+
+# Dependencies and build artifacts
+node_modules/
+dist/
+build/
+coverage/
+
+# Temporary files
+tmp/
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
