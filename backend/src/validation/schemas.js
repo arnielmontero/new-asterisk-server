@@ -1,6 +1,5 @@
 'use strict';
 const { z } = require('zod');
-const { EXTENSION_NUMBERS, PAGING_GROUP_NUMBERS } = require('../extensions/registry');
 
 const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
 const ROLES = ['admin', 'operator', 'user'];
@@ -8,7 +7,8 @@ const ROLES = ['admin', 'operator', 'user'];
 const username = z.string().trim().toLowerCase().regex(USERNAME_RE, 'Username must be 3-32 characters: a-z, 0-9, dot, underscore or hyphen');
 const password = z.string().min(12, 'Password must be at least 12 characters').max(128, 'Password must be at most 128 characters');
 const role = z.enum(ROLES);
-const extension = z.enum(EXTENSION_NUMBERS);
+// Format only: whether the extension exists is checked against the live registry by the callers.
+const extension = z.string().regex(/^[0-9]{3,6}$/, 'Extension must be 3 to 6 digits');
 const extensionOrNull = extension.nullable();
 
 // Accept 700 or "700" but nothing else.
@@ -44,7 +44,7 @@ const originate = z
 
 const hangup = z.strictObject({ extension: numberAsString(extension) });
 
-const page = z.strictObject({ group: numberAsString(z.enum(PAGING_GROUP_NUMBERS)) });
+const page = z.strictObject({ group: numberAsString(z.string().regex(/^[0-9]{3,6}$/, 'Group must be 3 to 6 digits')) });
 
 const auditQuery = z.strictObject({
   page: z.coerce.number().int().min(1).max(100000).optional().default(1),

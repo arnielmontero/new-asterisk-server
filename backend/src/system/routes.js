@@ -2,7 +2,7 @@
 const express = require('express');
 
 /** Mounted behind authenticate + requireRole('admin'). */
-function systemRoutes({ db, ami, state, paging, version, startedAt }) {
+function systemRoutes({ db, ami, state, paging, applier, trunkStatus, version, startedAt }) {
   const router = express.Router();
 
   router.get('/status', async (_req, res) => {
@@ -26,6 +26,8 @@ function systemRoutes({ db, ami, state, paging, version, startedAt }) {
       ami: ami.status(),
       asterisk,
       extensions: state.snapshot(),
+      trunks: trunkStatus.snapshot(),
+      pbx: applier.status(),
       page: paging.current(),
     });
   });

@@ -14,13 +14,15 @@ const { callRoutes } = require('./calls/routes');
 const { pagingRoutes } = require('./paging/routes');
 const { healthRoutes } = require('./health/routes');
 const { systemRoutes } = require('./system/routes');
+const { pbxRoutes } = require('./pbx/routes');
+const { cdrRoutes } = require('./cdr/routes');
 
 /**
  * Build the Express application from already-constructed services, so tests can
  * inject a fake AMI while production wires the real one.
  */
 function createApp(deps) {
-  const { config, logger, db, users, audit, authService, ami, state, paging, version, startedAt, onUserSecurityChange } = deps;
+  const { config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, version, startedAt, onUserSecurityChange } = deps;
   const app = express();
 
   app.disable('x-powered-by');
@@ -62,13 +64,15 @@ function createApp(deps) {
   const auth = authenticate(authService);
   api.use(auth);
 
-  api.use(extensionRoutes({ state, config, audit }));
+  api.use(extensionRoutes({ state, registry, store, config }));
   api.use('/users', requireRole('admin'), userRoutes({ users, audit, onUserSecurityChange }));
   api.use('/audit', requireRole('admin'), auditRoutes({ audit }));
-  api.use('/system', requireRole('admin'), systemRoutes({ db, ami, state, paging, version, startedAt }));
+  api.use('/system', requireRole('admin'), systemRoutes({ db, ami, state, paging, applier, trunkStatus, version, startedAt }));
+  api.use('/pbx', requireRole('admin'), pbxRoutes({ store, applier, trunkStatus, audit, config }));
+  api.use('/cdr', requireRole('admin'), cdrRoutes({ cdr, audit }));
   api.use(['/originate', '/hangup'], requireRole('admin', 'operator'));
-  api.use(callRoutes({ ami, state, audit, logger }));
-  api.use('/page', requireRole('admin', 'operator'), pagingRoutes({ paging }));
+  api.use(callRoutes({ ami, state, registry, audit, logger }));
+  api.use('/page', requireRole('admin', 'operator'), pagingRoutes({ paging, registry }));
   api.use((_req, _res, next) => next(notFound('Unknown API endpoint')));
 
   app.use('/api', api);

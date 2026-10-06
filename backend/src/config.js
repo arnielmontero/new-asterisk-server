@@ -1,6 +1,9 @@
 'use strict';
 const { z } = require('zod');
 
+// An unset or empty variable (docker compose passes "" for an unset ${VAR:-}) means "not provided".
+const optionalText = z.string().optional().transform((v) => (v ? v : undefined));
+
 const envSchema = z.object({
   NODE_ENV: z.string().default('production'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -29,8 +32,14 @@ const envSchema = z.object({
   AMI_PASS: z.string().min(1),
 
   SERVER_HOSTNAME: z.string().default('communications.local'),
-  EXT_1001_PASSWORD: z.string().min(1),
-  EXT_1002_PASSWORD: z.string().min(1),
+  // Optional: only used once, to give the two extensions that existed before extensions became database-managed
+  // (1001, 1002) their original credentials so existing phones keep registering.
+  EXT_1001_PASSWORD: optionalText,
+  EXT_1002_PASSWORD: optionalText,
+  EXT_1001_PHONE_PASSWORD: optionalText,
+  EXT_1002_PHONE_PASSWORD: optionalText,
+  PBX_GENERATED_DIR: z.string().default('/pbx-generated'),
+  CDR_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
 });
 
 function loadConfig(env = process.env) {
@@ -64,7 +73,12 @@ function loadConfig(env = process.env) {
     loginRateLimit: { max: e.LOGIN_RATE_LIMIT_MAX, windowSeconds: e.LOGIN_RATE_LIMIT_WINDOW_SECONDS },
     ami: { host: e.AMI_HOST, port: e.AMI_PORT, username: e.AMI_USER, secret: e.AMI_PASS },
     serverHostname: e.SERVER_HOSTNAME,
-    extensionPasswords: { 1001: e.EXT_1001_PASSWORD, 1002: e.EXT_1002_PASSWORD },
+    seedSecrets: {
+      1001: { secret: e.EXT_1001_PASSWORD, phone_secret: e.EXT_1001_PHONE_PASSWORD },
+      1002: { secret: e.EXT_1002_PASSWORD, phone_secret: e.EXT_1002_PHONE_PASSWORD },
+    },
+    pbxGeneratedDir: e.PBX_GENERATED_DIR,
+    cdrRetentionDays: e.CDR_RETENTION_DAYS,
   };
 }
 

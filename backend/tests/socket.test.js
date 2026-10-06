@@ -24,7 +24,7 @@ describe('socket.io real-time channel', () => {
     operator = await h.makeUser({ username: 'sock.op', role: 'operator', extension: '1001' });
     plain = await h.makeUser({ username: 'sock.user', role: 'user' });
     server = http.createServer(h.app);
-    sockApi = createSocketServer({ httpServer: server, authService: h.authService, state: h.state, paging: h.paging, ami: h.ami, logger: h.logger });
+    sockApi = createSocketServer({ httpServer: server, authService: h.authService, state: h.state, paging: h.paging, ami: h.ami, registry: h.registry, trunkStatus: h.trunkStatus, applier: h.applier, logger: h.logger });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
     url = `http://127.0.0.1:${server.address().port}`;
   });

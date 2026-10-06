@@ -10,6 +10,11 @@ const { AuditService } = require('./audit/service');
 const { AuthService } = require('./auth/service');
 const { AmiClient } = require('./ami/client');
 const { ExtensionState } = require('./extensions/state');
+const { PbxRegistry } = require('./extensions/registry');
+const { PbxStore } = require('./pbx/store');
+const { ConfigApplier } = require('./pbx/apply');
+const { TrunkStatus } = require('./pbx/trunk-status');
+const { CdrService } = require('./cdr/service');
 const { PagingService } = require('./paging/service');
 const { watchOriginateResults } = require('./calls/routes');
 const { createSocketServer } = require('./socket');
@@ -45,21 +50,44 @@ async function main() {
     logger.info('administrator already exists; ADMIN_PASSWORD not applied');
   }
 
+  const store = new PbxStore(db);
+  const filled = await store.fillMissingSecrets(config.seedSecrets);
+  if (filled) logger.info({ extensions: filled }, 'initial extension credentials set');
+  const registry = new PbxRegistry();
+  registry.load(await store.snapshot());
+
   const ami = new AmiClient({ ...config.ami, logger });
-  const state = new ExtensionState({ ami, logger });
-  const paging = new PagingService({ ami, state, audit, logger });
+  const state = new ExtensionState({ ami, registry, logger });
+  const trunkStatus = new TrunkStatus({ ami, registry, logger });
+  const applier = new ConfigApplier({
+    store, registry, ami, db, logger, dir: config.pbxGeneratedDir,
+    onReloaded: async () => { await state.sync(); await trunkStatus.refresh(); },
+  });
+  const cdr = new CdrService({ db, registry, ami, logger });
+  const paging = new PagingService({ ami, state, registry, audit, logger });
   watchOriginateResults({ ami, audit });
 
   let socketApi = null;
   const app = createApp({
-    config, logger, db, users, audit, authService, ami, state, paging,
+    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr,
     version: pkg.version,
     startedAt,
     onUserSecurityChange: (userId) => socketApi?.disconnectUser(userId),
   });
   const server = http.createServer(app);
-  socketApi = createSocketServer({ httpServer: server, authService, state, paging, ami, logger });
+  socketApi = createSocketServer({ httpServer: server, authService, state, paging, ami, registry, trunkStatus, applier, cdr, logger });
 
+  // Write the generated configuration before Asterisk is asked to load it; a reload follows once AMI connects.
+  await applier.apply('startup', { force: true });
+  trunkStatus.start();
+  // Call-record retention (CDR_RETENTION_DAYS, 0 = keep forever): checked hourly.
+  let pruneTimer = null;
+  if (config.cdrRetentionDays > 0) {
+    const prune = () => cdr.prune(config.cdrRetentionDays).then((n) => n && logger.info({ removed: n }, 'old call records removed')).catch((err) => logger.warn({ err: err.message }, 'call record pruning failed'));
+    prune();
+    pruneTimer = setInterval(prune, 3600 * 1000);
+    pruneTimer.unref?.();
+  }
   ami.start(); // reconnects on its own; the HTTP API stays up while Asterisk is away
   await new Promise((resolve) => server.listen(config.port, '0.0.0.0', resolve));
   logger.info({ port: config.port }, 'listening');
@@ -82,6 +110,8 @@ async function main() {
       await new Promise((resolve) => socketApi.io.close(() => resolve()));
       server.closeAllConnections?.();
       await httpClosed;
+      trunkStatus.stop();
+      clearInterval(pruneTimer);
       await ami.stop();
       await db.close();
       logger.info('shutdown complete');

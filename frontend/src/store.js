@@ -9,6 +9,9 @@ export const store = {
     echoExtension: '600',
     page: null, // current page { group, name, status, ... } or null
     ami: null, // admins only: { state, ... }
+    trunks: [], // admins only: live trunk status [{ name, state, detail, activeChannels }]
+    pbx: null, // admins only: configuration apply status { inSync, pending, last }
+    cdrTick: 0, // bumped whenever a call record is stored; views refresh on change
     socketConnected: false,
     backendOk: true,
     sip: { state: 'idle', reason: '' }, // idle | registering | registered | failed | disabled

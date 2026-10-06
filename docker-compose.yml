@@ -30,10 +30,6 @@ services:
     init: true
     stop_grace_period: 30s
     environment:
-      EXT_1001_PASSWORD: ${EXT_1001_PASSWORD:?set EXT_1001_PASSWORD in .env}
-      EXT_1002_PASSWORD: ${EXT_1002_PASSWORD:?set EXT_1002_PASSWORD in .env}
-      EXT_1001_PHONE_PASSWORD: ${EXT_1001_PHONE_PASSWORD:?set EXT_1001_PHONE_PASSWORD in .env}
-      EXT_1002_PHONE_PASSWORD: ${EXT_1002_PHONE_PASSWORD:?set EXT_1002_PHONE_PASSWORD in .env}
       AMI_USER: ${AMI_USER:?set AMI_USER in .env}
       AMI_PASS: ${AMI_PASS:?set AMI_PASS in .env}
       AMI_PORT: ${AMI_PORT:-5038}
@@ -51,6 +47,8 @@ services:
       - ./asterisk/config:/etc/asterisk:ro
       - ./asterisk/keys:/etc/asterisk/keys:ro
       - asterisk_data:/var/lib/asterisk
+      # Extensions and trunks rendered by the backend from the database (Asterisk only reads them).
+      - pbx_generated:/pbx-generated
       - asterisk_logs:/var/log/asterisk
     tmpfs:
       - /run/asterisk:mode=0755
@@ -82,8 +80,15 @@ services:
       AMI_USER: ${AMI_USER}
       AMI_PASS: ${AMI_PASS}
       SERVER_HOSTNAME: ${SERVER_HOSTNAME}
-      EXT_1001_PASSWORD: ${EXT_1001_PASSWORD:?set EXT_1001_PASSWORD in .env}
-      EXT_1002_PASSWORD: ${EXT_1002_PASSWORD:?set EXT_1002_PASSWORD in .env}
+      # Only used once, to give the pre-existing extensions 1001/1002 their original credentials.
+      EXT_1001_PASSWORD: ${EXT_1001_PASSWORD:-}
+      EXT_1002_PASSWORD: ${EXT_1002_PASSWORD:-}
+      EXT_1001_PHONE_PASSWORD: ${EXT_1001_PHONE_PASSWORD:-}
+      EXT_1002_PHONE_PASSWORD: ${EXT_1002_PHONE_PASSWORD:-}
+      PBX_GENERATED_DIR: /pbx-generated
+      CDR_RETENTION_DAYS: ${CDR_RETENTION_DAYS:-0}
+    volumes:
+      - pbx_generated:/pbx-generated
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -136,3 +141,4 @@ volumes:
   pgdata:
   asterisk_data:
   asterisk_logs:
+  pbx_generated:

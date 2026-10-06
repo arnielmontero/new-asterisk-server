@@ -11,6 +11,10 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src ./src
 COPY migrations ./migrations
 
+# Shared with Asterisk: the backend renders extensions/trunks here. Created before USER so the named volume
+# inherits node ownership on first use.
+RUN mkdir -p /pbx-generated && chown node:node /pbx-generated
+
 USER node
 EXPOSE 3000
 CMD ["node", "src/index.js"]

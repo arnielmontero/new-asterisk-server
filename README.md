@@ -4,6 +4,9 @@ A completely self-hosted, LAN-only phone system and intercom:
 
 - browser softphones (WebRTC) and physical SIP phones (UDP) on Asterisk,
 - extension-to-extension calls, an echo test, and **live one-way paging** to groups,
+- **extensions, SIP trunks (provider, registration or IP, another PBX, GSM/FXO gateway), inbound numbers (DIDs) and
+  outbound routes managed entirely in the web UI**, applied to Asterisk live without a restart,
+- a **call history** with filters, statistics and CSV export,
 - a web dashboard with real-time extension state, user management and an audit log,
 - HTTPS/WSS terminated by Nginx with a local certificate authority,
 - no cloud telephony, no external database, no external identity provider.
@@ -38,7 +41,7 @@ Four containers, all `restart: unless-stopped` with real health checks:
 | Service | Image / base | Role |
 |---|---|---|
 | `asterisk` | built from source on `debian:12.12-slim` (digest-pinned) | PBX: PJSIP UDP + WebSocket transports, dialplan, `Page()`, AMI. Host networking. Runs as an unprivileged user |
-| `backend` | `node:22.20.0-bookworm-slim` (digest-pinned) | REST API, JWT auth, RBAC, audit, AMI client, real-time state, paging authorisation |
+| `backend` | `node:22.20.0-bookworm-slim` (digest-pinned) | REST API, JWT auth, RBAC, audit, AMI client, real-time state, paging authorisation, PBX configuration (extensions, trunks, routes) and its application to Asterisk, call records |
 | `frontend` | `nginx:1.28.0-alpine` (digest-pinned) | TLS termination, SPA, reverse proxy for `/api`, `/socket.io`, `/ws` |
 | `database` | `postgres:16.10-alpine` (digest-pinned) | persistence; never published to the host |
 
@@ -57,22 +60,37 @@ Four containers, all `restart: unless-stopped` with real health checks:
 All npm dependencies are pinned to exact versions with committed lockfiles (`npm ci` fails on drift). Debian's own
 apt packages inside the Asterisk image are not version-pinned (there is no snapshot repository), which is a known limitation.
 
-## Extensions and paging plan
+## Extensions, trunks and routes
 
-| Extension | Meaning |
+Everything below is managed in the web UI (administrators only) and stored in PostgreSQL. The backend renders it into
+Asterisk configuration (a volume shared with Asterisk) and reloads Asterisk over AMI, so a change is live within about a
+second and nobody is disconnected. The **System** page shows whether Asterisk is running exactly what the database says.
+
+```
+ Extensions / Trunks / Routes pages  ->  REST /api/pbx/*  ->  PostgreSQL (source of truth)
+                                                        |
+                              render (pure, strictly whitelisted)  ->  pjsip_generated.conf + extensions_generated.conf
+                                                        |                         (volume shared with Asterisk)
+                                            AMI: module reload res_pjsip.so, dialplan reload
+```
+
+| Page | What you manage |
 |---|---|
-| `1001` | Office |
-| `1002` | Warehouse |
-| `600` | Echo test |
-| `700` | Page All (1001 + 1002) |
-| `701` | Page Office (1001) |
-| `702` | Page Warehouse (1002) |
+| **Extensions** | extension number and name, browser softphone and/or physical phone login, permission to place outside calls, outbound caller ID, SIP credentials (shown on request, audited, regeneratable); **paging groups** and their members |
+| **Trunks** | SIP providers that give you phone numbers (registration with username/password, or IP-authenticated), another PBX, or a GSM/FXO gateway. Live status from Asterisk: registered / rejected, reachable / not answering, active calls. Optional channel limit, codecs, DTMF mode, caller ID |
+| **Routes** | *Inbound*: which extension (or the echo test, or a rejection) a phone number rings, per trunk or for all trunks, with a catch-all. *Outbound*: dial patterns (e.g. `_9NXXNXXXXXX`), digits to strip/add, trunks tried in order (failover), caller ID, emergency routes. Route **order** is the priority |
+| **Call history** | every call with direction, trunk, result and talk time; filters; per-day / per-hour charts, busiest numbers; CSV export |
 
-These numbers are part of the product contract. Credentials come from `.env`, never from source control.
+Built-in numbers: `600` is the echo test. Two extensions and three paging groups are created on first start so an existing
+installation keeps working: `1001` Office, `1002` Warehouse, `700` Page All, `701` Page Office, `702` Page Warehouse. They can
+be edited or deleted like any other. Extension and paging-group numbers are 3 to 6 digits and cannot overlap.
 
-Physical phones register with a separate PJSIP endpoint, `1001-phone` / `1002-phone` (a WebRTC endpoint and a plain-RTP
-phone cannot share one endpoint). Dialling 1001 or 1002 rings the browser and the phone in parallel, and caller ID is
-still presented as 1001/1002.
+Outbound calls are **off by default for every extension** (toll-fraud protection): enable "May place outbound calls" per
+extension. Emergency routes are the only exception. Internal extensions always win over an outbound pattern.
+
+Physical phones register with a separate PJSIP endpoint, `<number>-phone` (a WebRTC endpoint and a plain-RTP
+phone cannot share one endpoint). Dialling an extension rings its browser and its phone in parallel, and caller ID is
+still presented as the extension number.
 
 ## Paging: where the microphone audio comes from
 
@@ -161,14 +179,20 @@ and TRUNCATE.
 | Method and path | Who | Purpose |
 |---|---|---|
 | `POST /api/auth/login`, `/logout`, `/refresh`; `GET /api/auth/me` | any / authenticated | session handling |
-| `GET /api/extensions` | any authenticated | live state of 1001/1002, paging groups |
+| `GET /api/extensions` | any authenticated | live state of every extension, paging groups |
 | `GET /api/sip/config` | admin, operator (with an extension) | the caller's own SIP credentials for the browser softphone |
 | `POST /api/originate` `{from,to}` | admin, operator | click-to-call between configured extensions |
 | `POST /api/hangup` `{extension}` | admin, operator | hang up an extension's live channels |
 | `POST /api/page` `{group}`, `GET`/`DELETE /api/page` | admin, operator | authorise / inspect / force-end a page |
 | `GET/POST/PATCH/DELETE /api/users` | admin | user management |
 | `GET /api/audit` | admin | audit log (filters, paging) |
-| `GET /api/system/status` | admin | backend, database, AMI and Asterisk status |
+| `GET /api/system/status` | admin | backend, database, AMI, Asterisk, trunk and configuration-apply status |
+| `GET/POST/PATCH/DELETE /api/pbx/extensions`, `.../:id/credentials`, `.../:id/regenerate-secret` | admin | extensions and their SIP credentials |
+| `GET/POST/PATCH/DELETE /api/pbx/paging-groups` | admin | paging groups and members |
+| `GET/POST/PATCH/DELETE /api/pbx/trunks`, `GET /api/pbx/trunks/status` | admin | trunks and their live status |
+| `GET/POST/PATCH/DELETE /api/pbx/inbound-routes`, `/outbound-routes` | admin | inbound numbers and outbound routes |
+| `GET /api/pbx/apply`, `POST /api/pbx/apply` | admin | configuration apply status / re-apply now |
+| `GET /api/cdr`, `/api/cdr/stats`, `/api/cdr/export.csv` | admin | call history, statistics, CSV |
 | `GET /health`, `/api/health`, `/health/live` | public | readiness (200 only if database **and** AMI are healthy) / liveness |
 
 ### Real-time events (Socket.IO at `/socket.io`)
@@ -208,7 +232,7 @@ docker compose up -d --build
 ```
 
 Then open `https://<SERVER_HOSTNAME>/`, sign in as `admin` with `ADMIN_PASSWORD`, create operator users and assign each
-one extension 1001 or 1002. Full instructions, certificate installation, DNS/hosts, firewall rules and phone setup are in
+one extension. Full instructions, certificate installation, DNS/hosts, firewall rules and phone setup are in
 [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Known limitations
@@ -219,3 +243,5 @@ one extension 1001 or 1002. Full instructions, certificate installation, DNS/hos
 - Browser microphone/autoplay rules require the one-click audio enable after each page load and HTTPS with a trusted CA.
 - Debian packages inside the Asterisk image are not version-pinned.
 - The login rate limit and the single-active-page rule are per backend instance (a single instance is deployed).
+- Trunks use UDP or TCP signalling and unencrypted RTP (TLS/SRTP trunks are not offered yet). Behind NAT, a provider that needs
+  a public address in the SDP requires the server to have a routable address; this stack is designed for a LAN.

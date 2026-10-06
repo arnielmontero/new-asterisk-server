@@ -47,7 +47,9 @@ describe('user management', () => {
       { ...good, username: 'x'.repeat(40) },
       { ...good, username: "robert'); drop table users;--" },
       { ...good, role: 'superuser' },
-      { ...good, extension: '9999' },
+      { ...good, extension: '99' },
+      { ...good, extension: 'abc' },
+      { ...good, extension: '1001; Hangup' },
       { ...good, password: 'short' },
       { ...good, password: 'x'.repeat(200) },
       { ...good, is_admin: true },
@@ -58,6 +60,9 @@ describe('user management', () => {
       assert.equal(res.status, 400, JSON.stringify(body).slice(0, 80));
       assert.equal(res.body.error.code, 'validation_error');
     }
+    const ghost = await create({ ...good, extension: '9999' });
+    assert.equal(ghost.status, 400, 'a well-formed extension that does not exist');
+    assert.equal(ghost.body.error.code, 'unknown_extension');
     assert.equal((await create({ ...good, password: 'valid.name-valid.name' })).status, 400, 'password must not contain the username');
     assert.equal((await create({ ...good, password: 'aaaaaaaaaaaaaaaa' })).status, 400, 'single repeated character');
     assert.equal((await auditCount(h.db, "action = 'user.create' AND status = 'failure'")) >= 0, true);

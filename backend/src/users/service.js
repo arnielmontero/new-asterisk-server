@@ -157,6 +157,7 @@ class UsersService {
   }
 
   translate(err) {
+    if (err && err.code === '23503') return badRequest('That extension does not exist', 'unknown_extension');
     if (err && err.code === '23505') {
       if (String(err.constraint).includes('extension')) return conflict('That extension is already assigned to another user', 'extension_taken');
       return conflict('That username is already taken', 'username_taken');

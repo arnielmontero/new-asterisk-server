@@ -146,9 +146,10 @@ export class Softphone {
   async call(number, { paging = null } = {}) {
     if (this.session) throw new Error('You are already in a call');
     if (store.state.sip.state !== 'registered') throw new Error('Your phone is not registered yet');
-    if (!/^\d{3,4}$/.test(number)) throw new Error('Enter a 3-4 digit extension');
+    if (!/^[0-9*#+]{2,24}$/.test(number)) throw new Error('Enter an extension or a phone number (digits, *, # or +)');
 
-    const target = UserAgent.makeURI(`sip:${number}@${this.config.domain}`);
+    // "#" is not allowed unescaped in the user part of a SIP URI.
+    const target = UserAgent.makeURI(`sip:${number.replace(/#/g, '%23')}@${this.config.domain}`);
     const inviter = new Inviter(this.ua, target, { sessionDescriptionHandlerOptions: { constraints: MEDIA } });
     this.track(inviter, { direction: 'out', peer: number, paging });
     store.set({ call: { direction: 'out', peer: number, state: 'calling', paging, muted: false } });

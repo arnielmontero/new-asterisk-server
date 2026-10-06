@@ -1,0 +1,147 @@
+'use strict';
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { EventEmitter } = require('node:events');
+const { renderAll } = require('./render');
+
+const FILES = { pjsip: 'pjsip_generated.conf', dialplan: 'extensions_generated.conf' };
+
+/**
+ * Turns the database into live Asterisk configuration:
+ *   database -> registry (in-memory plan) -> rendered files in a volume shared with Asterisk
+ *            -> AMI "module reload" + "dialplan reload" -> verification -> apply log.
+ *
+ * Applies are serialised and debounced, so a burst of edits causes one reload. If Asterisk (AMI) is not
+ * reachable the files are still written and a reload happens as soon as AMI connects.
+ *
+ * Emits: 'applied' (result), 'failed' (result).
+ */
+class ConfigApplier extends EventEmitter {
+  constructor({ store, registry, ami, db, logger, dir, onReloaded, debounceMs = 400 }) {
+    super();
+    this.store = store;
+    this.registry = registry;
+    this.ami = ami;
+    this.db = db;
+    this.logger = logger;
+    this.dir = dir;
+    this.onReloaded = onReloaded;
+    this.debounceMs = debounceMs;
+    this.chain = Promise.resolve();
+    this.timer = null;
+    this.pendingReasons = new Set();
+    this.last = null; // last result
+    this.checksum = null; // checksum of the files currently on disk
+    this.reloadedChecksum = null; // checksum Asterisk last confirmed loading
+
+    ami.on('connected', () => {
+      if (this.checksum && this.reloadedChecksum !== this.checksum) this.schedule('ami-connected');
+    });
+  }
+
+  status() {
+    return {
+      checksum: this.checksum,
+      reloadedChecksum: this.reloadedChecksum,
+      inSync: !!this.checksum && this.checksum === this.reloadedChecksum,
+      pending: this.pendingReasons.size > 0,
+      last: this.last,
+    };
+  }
+
+  /** Coalesce changes made within debounceMs into a single apply. */
+  schedule(reason) {
+    this.pendingReasons.add(reason);
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      const reasons = [...this.pendingReasons].join(',');
+      this.pendingReasons.clear();
+      this.apply(reasons).catch(() => {});
+    }, this.debounceMs);
+    this.timer.unref?.();
+  }
+
+  /** Apply now (serialised). Resolves with the result; rejects only for programming errors. */
+  apply(reason, { force = false } = {}) {
+    const run = this.chain.then(() => this.run(reason, force));
+    this.chain = run.catch(() => {});
+    return run;
+  }
+
+  async run(reason, force) {
+    const startedAt = new Date();
+    let result;
+    try {
+      const snapshot = await this.store.snapshot();
+      this.registry.load(snapshot);
+      const rendered = renderAll(snapshot);
+      const changed = rendered.checksum !== this.checksum;
+      if (changed) await this.writeFiles(rendered);
+      this.checksum = rendered.checksum;
+
+      let reloaded = false;
+      if (this.ami.isConnected() && (changed || force || this.reloadedChecksum !== rendered.checksum)) {
+        await this.reload();
+        this.reloadedChecksum = rendered.checksum;
+        reloaded = true;
+        await this.qualifyTrunks(snapshot.trunks);
+        try {
+          await this.onReloaded?.();
+        } catch (err) {
+          this.logger.warn({ err: err.message }, 'post-reload refresh failed');
+        }
+      }
+      result = { ok: true, reason, checksum: rendered.checksum, changed, reloaded, at: startedAt, error: null };
+      this.logger.info({ reason, changed, reloaded, checksum: rendered.checksum.slice(0, 12) }, 'PBX configuration applied');
+    } catch (err) {
+      result = { ok: false, reason, checksum: this.checksum, changed: false, reloaded: false, at: startedAt, error: err.message };
+      this.logger.error({ reason, err: err.message }, 'PBX configuration apply failed');
+    }
+    this.last = result;
+    await this.db
+      .query('INSERT INTO pbx_apply_log (ok, checksum, reason, error) VALUES ($1,$2,$3,$4)', [result.ok, result.checksum, String(reason).slice(0, 200), result.error])
+      .catch((err) => this.logger.warn({ err: err.message }, 'could not record apply result'));
+    this.emit(result.ok ? 'applied' : 'failed', result);
+    return result;
+  }
+
+  async writeFiles({ pjsip, dialplan }) {
+    await fs.mkdir(this.dir, { recursive: true });
+    const write = async (name, content) => {
+      const target = path.join(this.dir, name);
+      const tmp = `${target}.tmp-${process.pid}`;
+      await fs.writeFile(tmp, content, { mode: 0o644 });
+      await fs.rename(tmp, target);
+    };
+    // Dialplan first: a new PJSIP object is only reachable through the dialplan that references it.
+    await write(FILES.dialplan, dialplan);
+    await write(FILES.pjsip, pjsip);
+  }
+
+  async command(cmd) {
+    const res = await this.ami.action({ Action: 'Command', Command: cmd }, { timeoutMs: 20000 });
+    if (res.response === 'Error') throw new Error(res.message || `AMI refused "${cmd}"`);
+    return String(res.fields?.Output || res.message || '');
+  }
+
+  /** Check reachability of new/changed trunks now instead of waiting for Asterisk's next OPTIONS cycle. Best effort. */
+  async qualifyTrunks(trunks) {
+    for (const t of trunks) {
+      if (!t.enabled || !t.qualify) continue;
+      try {
+        await this.command(`pjsip qualify trk-${t.name}`);
+      } catch (err) {
+        this.logger.debug({ err: err.message, trunk: t.name }, 'trunk qualify failed');
+      }
+    }
+  }
+
+  async reload() {
+    const pj = await this.command('module reload res_pjsip.so');
+    if (/failed|error|not found|unable/i.test(pj) && !/reloaded successfully/i.test(pj)) throw new Error(`PJSIP reload failed: ${pj.trim().slice(0, 300)}`);
+    const dp = await this.command('dialplan reload');
+    if (/failed|error|unable/i.test(dp)) throw new Error(`Dialplan reload failed: ${dp.trim().slice(0, 300)}`);
+  }
+}
+
+module.exports = { ConfigApplier, FILES };

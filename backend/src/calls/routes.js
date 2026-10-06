@@ -3,11 +3,10 @@ const express = require('express');
 const { schemas } = require('../validation/schemas');
 const { validate } = require('../validation/middleware');
 const { clientIp } = require('../auth/middleware');
-const { HttpError, conflict } = require('../errors');
-const { EXTENSIONS } = require('../extensions/registry');
+const { HttpError, conflict, badRequest } = require('../errors');
 
 /** Mounted behind authenticate + requireRole('admin', 'operator'). */
-function callRoutes({ ami, state, audit, logger }) {
+function callRoutes({ ami, state, registry, audit, logger }) {
   const router = express.Router();
 
   // Only configured extensions are accepted (schema enum), and the AMI action is
@@ -23,6 +22,10 @@ function callRoutes({ ami, state, audit, logger }) {
     }
     const source = state.get(from);
     const dest = state.get(to);
+    if (!source || !dest) {
+      await auditFail('unknown_extension');
+      throw badRequest(`Extension ${!source ? from : to} does not exist or is disabled`, 'unknown_extension');
+    }
     if (!source.registered) {
       await auditFail('source_offline');
       throw conflict(`Extension ${from} (${source.name}) is offline`, 'source_offline');
@@ -44,7 +47,7 @@ function callRoutes({ ami, state, audit, logger }) {
         Context: 'default',
         Exten: to,
         Priority: '1',
-        CallerID: `"${EXTENSIONS[from].name}" <${from}>`,
+        CallerID: `"${registry.extension(from).name}" <${from}>`,
         Timeout: '30000',
         Async: 'true',
       });
@@ -57,12 +60,13 @@ function callRoutes({ ami, state, audit, logger }) {
 
     await audit.log({ user: req.user, action: 'call.originate', target: `${from}->${to}`, ip: clientIp(req), details: { from, to } });
     logger.info({ user: req.user.username, from, to }, 'call originate queued');
-    res.status(202).json({ status: 'queued', from, to, message: `Ringing ${EXTENSIONS[from].name}; answer to be connected to ${EXTENSIONS[to].name}` });
+    res.status(202).json({ status: 'queued', from, to, message: `Ringing ${registry.extension(from).name}; answer to be connected to ${registry.extension(to).name}` });
   });
 
   // Hang up the live channels of one configured extension.
   router.post('/hangup', validate({ body: schemas.hangup }), async (req, res) => {
     const { extension } = req.valid.body;
+    if (!registry.isExtension(extension)) throw badRequest(`Extension ${extension} does not exist or is disabled`, 'unknown_extension');
     const channels = state.channelsFor(extension);
     if (channels.length === 0) {
       await audit.log({ user: req.user, action: 'call.hangup', target: extension, ip: clientIp(req), status: 'failure', details: { reason: 'no_active_call' } });
@@ -96,7 +100,7 @@ function callRoutes({ ami, state, audit, logger }) {
 function watchOriginateResults({ ami, audit }) {
   ami.on('event', (evt) => {
     if (evt.Event !== 'OriginateResponse' || !String(evt.Channel || '').includes('@originate-leg')) return;
-    const m = /^Local\/(\d{4})@originate-leg/.exec(evt.Channel);
+    const m = /^Local\/(\d{3,6})@originate-leg/.exec(evt.Channel);
     const from = m ? m[1] : null;
     const ok = evt.Response === 'Success';
     audit

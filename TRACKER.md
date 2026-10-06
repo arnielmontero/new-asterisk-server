@@ -169,6 +169,34 @@ Goal: secure, backed-up, tested, documented, and honestly verified end to end.
 
 ---
 
+## Extension programme — full-featured PBX (requested 2026-10-06)
+
+The original build was fixed to two extensions (1001/1002) with no trunks, no outside numbers and no call history. The
+programme below turns it into a managed PBX. Delivered in phases; each phase is built, tested against the live stack and only then
+marked done.
+
+### Phase A — Managed extensions, trunks, routes, call history (done 2026-10-06)
+- [x] Database-managed extensions (3-6 digits), browser + phone logins, generated secrets, outbound permission, caller ID, per-extension credentials view (audited) and secret regeneration
+- [x] Paging groups with arbitrary members (700/701/702 seeded); paging, state tracking and click-to-call work for any extension
+- [x] SIP trunks: registration (provider), IP-authenticated (provider / other PBX / GSM-FXO gateway), UDP/TCP, codecs, DTMF mode, channel limit, caller ID, default inbound destination; live status from Asterisk (registered/rejected, reachable, active calls)
+- [x] Inbound routes (DID exact, `+`, Asterisk pattern, `*` catch-all; per trunk or all trunks; caller-name prefix; destinations: extension, echo, reject/busy/congestion)
+- [x] Outbound routes (patterns, strip/prepend, ordered trunk failover, caller ID, emergency routes, route order = priority via per-route contexts). Extensions are not allowed to dial out unless enabled
+- [x] Config pipeline: PostgreSQL -> strict whitelist renderer -> files in a volume shared with Asterisk -> AMI reload; debounced, serialised, checksum-skipping, catches up when AMI reconnects, failure surfaced in the UI (System page, header chip) and the audit log
+- [x] Call history (Asterisk CDR over AMI -> PostgreSQL): list with filters and paging, statistics (per day, per hour, busiest numbers), CSV export (formula-safe), retention (`CDR_RETENTION_DAYS`)
+- [x] Admin UI: Extensions, Trunks, Routes, Call history pages; Users page uses the live extension list; dashboard dial box accepts outside numbers; System page shows trunks and apply status
+- [x] **Verified:** 222 backend tests (up from 143); 9 browser tests building everything through the UI and placing a real call out through a trunk and back in with a measured echo tone (`tests/e2e/admin-pbx.test.js`); the original 18 browser tests, 57 stack checks, 16 backup/restore, 6 resilience and 48 Windows-phone end-to-end checks all still pass
+- Defects found by testing: chained `validate()` middlewares dropped route params (500s); two outbound routes with the same pattern silently shadowed each other (fixed with per-route contexts included in order); trunk "unavailable" state wrongly skipped usable trunks; a new trunk could take a minute to show ONLINE (now qualified immediately); inline `style` attributes violate the CSP (charts use the CSS object model)
+
+### Phase B — IVR, ring groups, queues, voicemail, recordings (not started)
+- [ ] Time conditions (business hours / holidays) as inbound destinations
+- [ ] IVR menus (prompt, digit options, timeout, invalid), ring groups (ring-all / sequential), call queues with agents, voicemail with in-browser listening and optional e-mail, call forwarding and do-not-disturb per extension
+- [ ] Call recording (MixMonitor) with in-browser playback, retention, access control
+
+### Phase C — Conferencing, parking, transfer, presence (not started)
+- [ ] Conference rooms, call parking, attended and blind transfer, busy-lamp presence for every extension, call pickup
+
+---
+
 ## Acceptance tests (§75)
 
 Status values: `NOT RUN` · `PASS` · `FAIL` · `MANUAL REQUIRED`. Evidence column = command output / log / trace reference.

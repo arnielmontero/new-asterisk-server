@@ -151,7 +151,7 @@ export function dashboardView({ softphone }) {
 
 // ------------------------------------------------------------------ softphone
 function buildPhonePanel(softphone) {
-  const dial = h('input', { id: 'dial', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: '4', placeholder: 'Extension', autocomplete: 'off', 'aria-label': 'Extension to call' });
+  const dial = h('input', { id: 'dial', type: 'text', inputmode: 'tel', pattern: '[0-9*#+]*', maxlength: '24', placeholder: 'Extension or number', autocomplete: 'off', 'aria-label': 'Extension or phone number to call' });
   const status = h('div', { class: 'sip-status' });
   const body = h('div', { class: 'phone-body' });
   const call = h('div', { class: 'call-state' });
@@ -161,7 +161,7 @@ function buildPhonePanel(softphone) {
     try { await softphone.call(number); } catch (err) { if (!store.state.call) store.toast(err.message); }
   };
   dial.addEventListener('keydown', (e) => { if (e.key === 'Enter' && dial.value) doCall(dial.value); });
-  dial.addEventListener('input', () => { dial.value = dial.value.replace(/\D/g, ''); });
+  dial.addEventListener('input', () => { dial.value = dial.value.replace(/[^0-9*#+]/g, ''); });
 
   const dialRow = h('div', { class: 'dial-row' },
     dial,
@@ -176,7 +176,7 @@ function buildPhonePanel(softphone) {
       return;
     }
     if (!user.extension) {
-      mount(status, h('p', { class: 'muted' }, 'No extension is assigned to your account. Ask an administrator to assign 1001 or 1002 to enable the softphone.'));
+      mount(status, h('p', { class: 'muted' }, 'No extension is assigned to your account. Ask an administrator to assign an extension to enable the softphone.'));
       mount(body); mount(call);
       return;
     }

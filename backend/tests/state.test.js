@@ -4,7 +4,26 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { ExtensionState, normalizeDeviceState } = require('../src/extensions/state');
 const { createLogger } = require('../src/logger');
-const { extensionFromChannel, extensionFromEndpoint, pagingTargets } = require('../src/extensions/registry');
+const { PbxRegistry } = require('../src/extensions/registry');
+
+function seededRegistry() {
+  const r = new PbxRegistry();
+  r.load({
+    extensions: [
+      { number: '1001', display_name: 'Office', enabled: true, webrtc_enabled: true, phone_enabled: true },
+      { number: '1002', display_name: 'Warehouse', enabled: true, webrtc_enabled: true, phone_enabled: true },
+      { number: '1003', display_name: 'Disabled', enabled: false, webrtc_enabled: true, phone_enabled: true },
+    ],
+    groups: [
+      { number: '700', name: 'Page All', enabled: true, members: ['1001', '1002', '1003'] },
+      { number: '701', name: 'Page Office', enabled: true, members: ['1001'] },
+      { number: '702', name: 'Page Warehouse', enabled: true, members: ['1002'] },
+      { number: '703', name: 'Off', enabled: false, members: ['1001'] },
+    ],
+    trunks: [{ id: 1, name: 'acme', display_name: 'Acme', auth_mode: 'register', host: 'sip.acme.test', enabled: true }],
+  });
+  return r;
+}
 
 class StubAmi extends EventEmitter {
   constructor() { super(); this.connected = true; this.responses = {}; }
@@ -13,10 +32,11 @@ class StubAmi extends EventEmitter {
 }
 
 describe('extension state derivation', () => {
-  let ami; let state; let changes;
+  let ami; let state; let changes; let registry;
   beforeEach(() => {
     ami = new StubAmi();
-    state = new ExtensionState({ ami, logger: createLogger('silent') });
+    registry = seededRegistry();
+    state = new ExtensionState({ ami, registry, logger: createLogger('silent') });
     state.synced = true;
     changes = [];
     state.on('change', (c) => changes.push(c));
@@ -24,16 +44,25 @@ describe('extension state derivation', () => {
   const ev = (e) => ami.emit('event', e);
 
   test('registry helpers map endpoints and channels to extensions', () => {
-    assert.equal(extensionFromEndpoint('1001'), '1001');
-    assert.equal(extensionFromEndpoint('1002-phone'), '1002');
-    assert.equal(extensionFromEndpoint('1003'), null);
-    assert.equal(extensionFromEndpoint('9999-phone'), null);
-    assert.equal(extensionFromChannel('PJSIP/1001-0000002a'), '1001');
-    assert.equal(extensionFromChannel('PJSIP/1002-phone-0000002b'), '1002');
-    assert.equal(extensionFromChannel('Local/1001@originate-leg-00000001;1'), null);
-    assert.deepEqual(pagingTargets('700', '1001'), ['1002']);
-    assert.deepEqual(pagingTargets('701', '1001'), []);
-    assert.deepEqual(pagingTargets('702', '1001'), ['1002']);
+    assert.equal(registry.extensionFromEndpoint('1001'), '1001');
+    assert.equal(registry.extensionFromEndpoint('1002-phone'), '1002');
+    assert.equal(registry.extensionFromEndpoint('1003'), null, 'disabled extensions are not tracked');
+    assert.equal(registry.extensionFromEndpoint('9999-phone'), null);
+    assert.equal(registry.extensionFromChannel('PJSIP/1001-0000002a'), '1001');
+    assert.equal(registry.extensionFromChannel('PJSIP/1002-phone-0000002b'), '1002');
+    assert.equal(registry.extensionFromChannel('Local/1001@originate-leg-00000001;1'), null);
+    assert.equal(registry.extensionFromChannel('PJSIP/trk-acme-0000002c'), null);
+    assert.deepEqual(registry.pagingTargets('700', '1001'), ['1002']);
+    assert.deepEqual(registry.pagingTargets('701', '1001'), []);
+    assert.deepEqual(registry.pagingTargets('702', '1001'), ['1002']);
+    assert.deepEqual(registry.pagingTargets('703', '1002'), [], 'disabled groups do not exist');
+  });
+
+  test('trunk endpoints and channels are recognised and never mistaken for extensions', () => {
+    assert.equal(registry.trunkFromEndpoint('trk-acme'), 'acme');
+    assert.equal(registry.trunkFromEndpoint('trk-other'), null);
+    assert.equal(registry.trunkFromChannel('PJSIP/trk-acme-0000002c'), 'acme');
+    assert.equal(registry.trunkFromChannel('PJSIP/1001-0000002c'), null);
   });
 
   test('device state strings from different AMI sources are normalised', () => {

@@ -26,4 +26,5 @@ docker run --rm --network "$NETWORK" \
   -v "${CERT}:/certs/LAN_CA.crt:ro" \
   -e BASE_URL="https://${HOSTNAME_}" \
   -e ADMIN_PASSWORD="$(env_value ADMIN_PASSWORD)" \
+  -e TEST_FILE="${TEST_FILE:-}" \
   comms-e2e "$@"

@@ -21,7 +21,7 @@ const { COOKIE_NAME } = require('../auth/middleware');
  *   ami.connected / ami.disconnected   { state, ... }          (administrators only)
  *   ami.snapshot              { state, ... }                    (administrators only, on connect)
  */
-function createSocketServer({ httpServer, authService, state, paging, ami, logger }) {
+function createSocketServer({ httpServer, authService, state, paging, ami, registry, trunkStatus, applier, cdr, logger }) {
   const io = new Server(httpServer, {
     path: '/socket.io',
     serveClient: false,
@@ -58,11 +58,19 @@ function createSocketServer({ httpServer, authService, state, paging, ami, logge
     if (user.role === 'admin') {
       socket.join('admins');
       socket.emit('ami.snapshot', ami.status());
+      socket.emit('trunk.snapshot', trunkStatus.snapshot());
+      socket.emit('pbx.apply', applier.status());
     }
     const current = paging.current();
     if (current && current.status === 'live') socket.emit('paging.started', current);
   });
 
+  // The extension plan changed (create/delete/rename): everyone gets a fresh list.
+  registry.on('changed', () => io.emit('extension.snapshot', state.snapshot()));
+  trunkStatus.on('change', (list) => io.to('admins').emit('trunk.snapshot', list));
+  applier.on('applied', () => io.to('admins').emit('pbx.apply', applier.status()));
+  applier.on('failed', () => io.to('admins').emit('pbx.apply', applier.status()));
+  if (cdr) cdr.onRecord = (r) => io.to('admins').emit('cdr.new', r);
   state.on('change', (ext) => io.emit('extension.status.changed', ext));
   state.on('call.started', (c) => io.emit('call.started', c));
   state.on('call.ended', (c) => io.emit('call.ended', c));

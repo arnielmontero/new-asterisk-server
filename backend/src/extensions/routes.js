@@ -1,17 +1,18 @@
 'use strict';
 const express = require('express');
 const { forbidden } = require('../errors');
-const { EXTENSIONS, PAGING_GROUPS, ECHO_EXTENSION } = require('./registry');
 
 /** Mounted behind authenticate (all roles may read status). */
-function extensionRoutes({ state, config, audit }) {
+function extensionRoutes({ state, registry, store, config }) {
   const router = express.Router();
+
+  const pagingGroups = () => registry.pagingGroups().map((g) => ({ number: g.number, name: g.name, members: g.members }));
 
   router.get('/extensions', (_req, res) => {
     res.json({
       extensions: state.snapshot(),
-      pagingGroups: Object.values(PAGING_GROUPS).map((g) => ({ number: g.number, name: g.name, members: g.members })),
-      echoExtension: ECHO_EXTENSION,
+      pagingGroups: pagingGroups(),
+      echoExtension: registry.echoExtension,
     });
   });
 
@@ -22,20 +23,26 @@ function extensionRoutes({ state, config, audit }) {
   router.get('/sip/config', async (req, res) => {
     const { user } = req;
     if (!['admin', 'operator'].includes(user.role)) throw forbidden('Your role does not have a softphone');
-    if (!user.extension) {
+    const ext = user.extension ? registry.extension(user.extension) : null;
+    if (!ext) {
       res.json({ configured: false, reason: 'No SIP extension is assigned to your account' });
       return;
     }
+    if (!ext.webrtc) {
+      res.json({ configured: false, reason: `Extension ${ext.number} has no browser softphone enabled` });
+      return;
+    }
+    const secrets = await store.getExtensionSecretsByNumber(ext.number);
     res.set('Cache-Control', 'no-store');
     res.json({
       configured: true,
-      extension: user.extension,
-      displayName: EXTENSIONS[user.extension].name,
-      username: user.extension,
-      password: config.extensionPasswords[user.extension],
+      extension: ext.number,
+      displayName: ext.name,
+      username: ext.number,
+      password: secrets.secret,
       domain: config.serverHostname,
-      echoExtension: ECHO_EXTENSION,
-      pagingGroups: Object.values(PAGING_GROUPS).map((g) => g.number),
+      echoExtension: registry.echoExtension,
+      pagingGroups: registry.pagingGroups().map((g) => g.number),
     });
   });
 

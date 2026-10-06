@@ -43,8 +43,8 @@ the Users page. The password is never written to the logs.
 | `AMI_PERMIT` | networks allowed to log in to AMI besides loopback (default Docker bridges) |
 | `ASTERISK_HOST` | where the `frontend` and `backend` containers reach Asterisk (default `host.docker.internal`) |
 | `RTP_START`, `RTP_END` | UDP media port range (default 10100-10300). Must not contain UDP 10080: browsers refuse to send to it, so calls landing there have no audio (the container refuses to start with such a range) |
-| `EXT_1001_PASSWORD`, `EXT_1002_PASSWORD` | SIP credentials of the browser clients (16+ characters from `A-Za-z0-9._~+=-`) |
-| `EXT_1001_PHONE_PASSWORD`, `EXT_1002_PHONE_PASSWORD` | SIP credentials of physical phones |
+| `EXT_1001_PASSWORD`, `EXT_1002_PASSWORD`, `EXT_1001_PHONE_PASSWORD`, `EXT_1002_PHONE_PASSWORD` | **Optional, used once.** Extensions are now created and managed in the web UI with generated credentials. On the first start after upgrading from the fixed-extension version these give the two original extensions (1001, 1002) their existing passwords, so phones that are already set up keep registering. Afterwards changing them in `.env` has no effect: use the Extensions page |
+| `CDR_RETENTION_DAYS` | delete call records older than this many days (default `0` = keep forever) |
 | `AMI_USER`, `AMI_PASS`, `AMI_PORT` | the dedicated AMI account used by the backend |
 | `POSTGRES_*`, `JWT_SECRET`, `ADMIN_PASSWORD` | database and application secrets |
 
@@ -139,13 +139,44 @@ iptables -I DOCKER-USER -i eth0 ! -s 192.168.1.0/24 -p tcp -m conntrack --ctorig
 
 Never forward any of these ports from your router to the Internet.
 
-## 7. Users, extensions and credentials
+## 7. Extensions, users and credentials
 
-1. Sign in as `admin` → **Users**.
-2. Create a user per person with a role (`operator` or `admin` to call and page; `user` for read-only) and, for people who
-   use the browser softphone, assign **one** extension (1001 or 1002; an extension can belong to one user).
+1. Sign in as `admin` → **Extensions** → *Add extension*. Choose a 3-6 digit number and a name; leave the browser
+   softphone and/or physical phone ticked. Tick *May place outbound calls* only for extensions that may call outside numbers.
+   The SIP credentials are generated and shown once on creation; open them again any time with **Credentials** (each view is
+   audited). *New phone password* replaces a secret immediately.
+2. **Users** → create a user per person with a role (`operator` or `admin` to call and page; `user` for read-only) and, for
+   people who use the browser softphone, assign **one** extension (an extension can belong to one user).
 3. The browser fetches the SIP credentials of *its own* extension from the backend after login; users never type or see
-   the SIP password. Rotate SIP passwords by editing `.env` and running `docker compose up -d asterisk backend`.
+   the SIP password. A physical phone or the Windows SIP phone uses the *phone* credentials (username `<number>-phone`).
+4. Deleting an extension unassigns its user and removes it from paging groups; it is refused while an inbound route or trunk
+   default still sends calls to it.
+
+**Upgrading from the fixed 1001/1002 version:** nothing to do. On the first start the migration creates the two extensions and
+the three paging groups, the backend gives them their `.env` credentials, and Asterisk loads the generated files. The
+Asterisk container needs the new `pbx_generated` volume (declared in `docker-compose.yml`): `docker compose up -d --build`.
+
+## 7a. Trunks, phone numbers and routes
+
+Outside calls need a **trunk**: where this system sends calls to and receives them from. Add one under **Trunks**:
+
+| You have | Choose | Fill in |
+|---|---|---|
+| A SIP provider account (username + password) | *SIP provider*, *Registration* | server (e.g. `sip.provider.com`), username, password. The system registers by itself; the status shows **ONLINE** when the provider accepts it, or *Registration rejected* with the reason |
+| A provider or carrier that trusts your public IP | *SIP provider*, *IP address* | server, and any extra IPs they call from |
+| Another PBX (FreePBX, 3CX, another Asterisk) | *Another PBX*, *IP address* | the other PBX's address; create a matching trunk on the other side pointing at this server |
+| A GSM or analog (FXO) gateway | *Gateway*, *IP address* | the gateway's LAN address; set the gateway to send/receive SIP to this server |
+
+Then **Routes**:
+
+- *Inbound*: enter the number your provider sends (the DID, exactly as it appears), pick the trunk (or all) and the extension it
+  should ring. Add a `*` route (or the trunk's *default*) to catch everything else; with neither, unknown numbers are rejected.
+- *Outbound*: pick a template (e.g. *National*: dial `9` + 10 digits, remove the `9`), choose the trunks in the order to try
+  them, and make sure the extensions that may use it have *May place outbound calls* ticked. The route **order** decides which
+  of two overlapping routes wins.
+
+Firewall: the provider's addresses must be reachable on UDP/TCP 5060 and the RTP range both ways (see section 6). Calls
+from a trunk can only ever reach inbound routes: they cannot dial extensions, paging groups or other trunks.
 
 Passwords must be at least 12 characters (not trivial, not containing the username).
 

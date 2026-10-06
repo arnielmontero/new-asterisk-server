@@ -9,6 +9,10 @@ import { dashboardView } from './views/dashboard.js';
 import { usersView } from './views/users.js';
 import { auditView } from './views/audit.js';
 import { systemView } from './views/system.js';
+import { extensionsView } from './views/extensions.js';
+import { trunksView } from './views/trunks.js';
+import { routesView } from './views/routes.js';
+import { callsView } from './views/calls.js';
 
 const root = document.getElementById('app');
 const audioEl = document.getElementById('remote-audio');
@@ -21,6 +25,10 @@ let healthTimer = null;
 
 const ROUTES = {
   '#/': { admin: false, view: () => dashboardView({ softphone }) },
+  '#/extensions': { admin: true, view: () => extensionsView() },
+  '#/trunks': { admin: true, view: () => trunksView() },
+  '#/routes': { admin: true, view: () => routesView() },
+  '#/calls': { admin: true, view: () => callsView() },
   '#/users': { admin: true, view: () => usersView() },
   '#/audit': { admin: true, view: () => auditView() },
   '#/system': { admin: true, view: () => systemView() },
@@ -51,7 +59,15 @@ function buildChrome() {
 }
 
 function chromeSignature(s) {
-  return JSON.stringify([s.user?.username, s.user?.role, s.sip, s.socketConnected, s.backendOk, s.ami?.state, location.hash]);
+  return JSON.stringify([s.user?.username, s.user?.role, s.sip, s.socketConnected, s.backendOk, s.ami?.state, pbxChip(s)?.text, location.hash]);
+}
+
+// Configuration changes are applied to Asterisk in the background; admins see when that is done or failed.
+function pbxChip(s) {
+  if (s.user?.role !== 'admin' || !s.pbx) return null;
+  if (s.pbx.last && !s.pbx.last.ok) return { cls: 'bad', text: 'PBX config ERROR', title: s.pbx.last.error || '' };
+  if (s.pbx.pending || !s.pbx.inSync) return { cls: 'sip-registering', text: 'PBX config applying…', title: '' };
+  return null;
 }
 
 function renderChrome() {
@@ -66,11 +82,12 @@ function renderChrome() {
     chrome.header,
     h('div', { class: 'brand' }, 'LAN Communications'),
     h('nav', null, navLink('#/', 'Dashboard'),
-      user.role === 'admin' ? [navLink('#/users', 'Users'), navLink('#/audit', 'Audit log'), navLink('#/system', 'System')] : null),
+      user.role === 'admin' ? [navLink('#/extensions', 'Extensions'), navLink('#/trunks', 'Trunks'), navLink('#/routes', 'Routes'), navLink('#/calls', 'Call history'), navLink('#/users', 'Users'), navLink('#/audit', 'Audit log'), navLink('#/system', 'System')] : null),
     h('div', { class: 'who' },
       canUseSoftphone(user) ? h('span', { class: `status-chip sip-${s.sip.state}`, id: 'chip-sip', title: s.sip.reason || '' }, `SIP ${sipLabel}`) : null,
       h('span', { class: `status-chip ${s.backendOk && s.socketConnected ? 'ok' : 'bad'}`, id: 'chip-server' },
         !s.backendOk ? 'Server unreachable' : s.socketConnected ? 'Live' : 'Reconnecting…'),
+      (() => { const c = pbxChip(s); return c ? h('span', { class: `status-chip ${c.cls}`, id: 'chip-pbx', title: c.title }, c.text) : null; })(),
       user.role === 'admin' && s.ami
         ? h('span', { class: `status-chip ${s.ami.state === 'connected' ? 'ok' : 'bad'}`, id: 'chip-ami' }, `Telephony ${s.ami.state === 'connected' ? 'connected' : 'DISCONNECTED'}`)
         : null,
@@ -135,7 +152,7 @@ function teardown() {
   socket?.close();
   socket = null;
   store.set({
-    user: null, extensions: [], page: null, ami: null, sip: { state: 'idle', reason: '' },
+    user: null, extensions: [], page: null, ami: null, trunks: [], pbx: null, sip: { state: 'idle', reason: '' },
     call: null, incoming: null, audioReady: false, audioBlocked: false, socketConnected: false,
   });
 }
@@ -169,6 +186,9 @@ function connectSocket() {
     store.set({ page: null });
     if (p.username === store.state.user?.username) store.toast(`Page failed: ${humanReason(p.reason)}`);
   });
+  socket.on('trunk.snapshot', (trunks) => store.set({ trunks }));
+  socket.on('pbx.apply', (pbx) => store.set({ pbx }));
+  socket.on('cdr.new', () => store.set({ cdrTick: store.state.cdrTick + 1 }));
   socket.on('ami.snapshot', (ami) => store.set({ ami }));
   socket.on('ami.connected', (ami) => store.set({ ami }));
   socket.on('ami.disconnected', (ami) => store.set({ ami }));

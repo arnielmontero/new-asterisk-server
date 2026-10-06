@@ -13,7 +13,7 @@ export function usersView() {
     username: h('input', { name: 'username', required: true, autocomplete: 'off', placeholder: 'e.g. jane.doe' }),
     password: h('input', { name: 'password', type: 'password', required: true, autocomplete: 'new-password', placeholder: 'at least 12 characters' }),
     role: h('select', { name: 'role' }, ROLES.map((r) => h('option', { value: r }, r))),
-    extension: h('select', { name: 'extension' }, [h('option', { value: '' }, 'none'), h('option', { value: '1001' }, '1001 Office'), h('option', { value: '1002' }, '1002 Warehouse')]),
+    extension: h('select', { name: 'extension' }, [h('option', { value: '' }, 'none')]),
   };
   f.role.value = 'operator';
 
@@ -45,9 +45,17 @@ export function usersView() {
     h('button', { class: 'btn primary', type: 'submit' }, 'Create user'),
   );
 
+  let extensionList = [];
+  const fillExtensions = (list) => {
+    extensionList = list;
+    mount(f.extension, h('option', { value: '' }, 'none'),
+      list.map((e) => h('option', { value: e.number }, `${e.number} ${e.display_name}${e.user ? ` (in use by ${e.user})` : ''}`)));
+  };
+
   async function load() {
     try {
-      const { users } = await api('GET', '/users');
+      const [{ users }, { extensions }] = await Promise.all([api('GET', '/users'), api('GET', '/pbx/extensions')]);
+      fillExtensions(extensions);
       render(users);
     } catch (err) {
       mount(table, h('p', { class: 'form-error' }, describeError(err)));
@@ -86,7 +94,7 @@ export function usersView() {
   function edit(u) {
     const role = h('select', null, ROLES.map((r) => h('option', { value: r }, r)));
     role.value = u.role;
-    const ext = h('select', null, [h('option', { value: '' }, 'none'), h('option', { value: '1001' }, '1001 Office'), h('option', { value: '1002' }, '1002 Warehouse')]);
+    const ext = h('select', null, [h('option', { value: '' }, 'none'), extensionList.map((e) => h('option', { value: e.number }, `${e.number} ${e.display_name}${e.user && e.user !== u.username ? ` (in use by ${e.user})` : ''}`))]);
     ext.value = u.extension || '';
     const active = h('input', { type: 'checkbox', checked: u.is_active });
     const pw = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'leave blank to keep' });

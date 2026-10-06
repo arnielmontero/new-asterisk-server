@@ -1,5 +1,7 @@
 'use strict';
 const path = require('node:path');
+const os = require('node:os');
+const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { Pool } = require('pg');
@@ -12,6 +14,11 @@ const { UsersService } = require('../src/users/service');
 const { AuditService } = require('../src/audit/service');
 const { AuthService } = require('../src/auth/service');
 const { ExtensionState } = require('../src/extensions/state');
+const { PbxRegistry } = require('../src/extensions/registry');
+const { PbxStore } = require('../src/pbx/store');
+const { ConfigApplier } = require('../src/pbx/apply');
+const { TrunkStatus } = require('../src/pbx/trunk-status');
+const { CdrService } = require('../src/cdr/service');
 const { PagingService } = require('../src/paging/service');
 const { createApp } = require('../src/app');
 
@@ -78,6 +85,7 @@ function testEnv(overrides = {}) {
     ADMIN_PASSWORD: 'Bootstrap-Passw0rd-tests',
     AMI_HOST: 'fake', AMI_USER: 'fake', AMI_PASS: 'fake',
     EXT_1001_PASSWORD: 'ext1001-test-password', EXT_1002_PASSWORD: 'ext1002-test-password',
+    EXT_1001_PHONE_PASSWORD: 'phone1001-test-password', EXT_1002_PHONE_PASSWORD: 'phone1002-test-password',
     LOGIN_RATE_LIMIT_MAX: '50',
     ...overrides,
   };
@@ -108,11 +116,21 @@ async function createHarness({ env = {}, pagingTtl = 20, migrate = true } = {}) 
   const audit = new AuditService(db, logger);
   const authService = new AuthService({ config, users, audit, logger });
   const ami = new FakeAmi();
-  const state = new ExtensionState({ ami, logger });
-  const paging = new PagingService({ ami, state, audit, logger, authTtlSeconds: pagingTtl });
+  const store = new PbxStore(db);
+  const registry = new PbxRegistry();
+  if (migrate) {
+    await store.fillMissingSecrets(config.seedSecrets);
+    registry.load(await store.snapshot());
+  }
+  const state = new ExtensionState({ ami, registry, logger });
+  const trunkStatus = new TrunkStatus({ ami, registry, logger });
+  const generatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pbx-gen-'));
+  const applier = new ConfigApplier({ store, registry, ami, db, logger, dir: generatedDir, debounceMs: 150 });
+  const cdr = new CdrService({ db, registry, ami, logger });
+  const paging = new PagingService({ ami, state, registry, audit, logger, authTtlSeconds: pagingTtl });
   const disconnected = [];
   const app = createApp({
-    config, logger, db, users, audit, authService, ami, state, paging,
+    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr,
     version: 'test', startedAt: Date.now(),
     onUserSecurityChange: (id) => disconnected.push(id),
   });
@@ -142,6 +160,9 @@ async function createHarness({ env = {}, pagingTtl = 20, migrate = true } = {}) 
   }
 
   async function cleanup() {
+    trunkStatus.stop();
+    clearTimeout(applier.timer);
+    fs.rmSync(generatedDir, { recursive: true, force: true });
     await db.close().catch(() => {});
     await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
     await admin.end();
@@ -155,7 +176,7 @@ async function createHarness({ env = {}, pagingTtl = 20, migrate = true } = {}) 
     ami.register('1002');
   }
 
-  return { app, agent, reset, config, db, users, audit, authService, ami, state, paging, login, makeUser, seedAdmin, cleanup, dbName, disconnected, logger };
+  return { app, agent, reset, config, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, generatedDir, login, makeUser, seedAdmin, cleanup, dbName, disconnected, logger };
 }
 
 const auditCount = async (db, where = 'true', params = []) =>

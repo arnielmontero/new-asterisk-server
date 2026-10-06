@@ -1,0 +1,489 @@
+'use strict';
+const crypto = require('node:crypto');
+const { conflict, notFound, badRequest } = require('../errors');
+const { RESERVED_NUMBERS, trunkRules } = require('./schemas');
+
+const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+/** Cryptographically random secret that is always valid for the SIP secret schema. */
+function generateSecret(length = 20) {
+  const bytes = crypto.randomBytes(length);
+  let out = '';
+  for (let i = 0; i < length; i += 1) out += ALPHABET[bytes[i] % ALPHABET.length];
+  return out;
+}
+
+const publicExtension = (r) => ({
+  id: Number(r.id),
+  number: r.number,
+  display_name: r.display_name,
+  webrtc_enabled: r.webrtc_enabled,
+  phone_enabled: r.phone_enabled,
+  allow_outbound: r.allow_outbound,
+  outbound_cid: r.outbound_cid,
+  enabled: r.enabled,
+  notes: r.notes,
+  user: r.username || null,
+  created_at: r.created_at,
+  updated_at: r.updated_at,
+});
+
+const publicTrunk = (r) => {
+  const { password, ...rest } = r;
+  return { ...rest, id: Number(r.id), has_password: !!password };
+};
+
+class PbxStore {
+  constructor(db) {
+    this.db = db;
+  }
+
+  // ------------------------------------------------------------------ helpers
+  translate(err, what) {
+    if (err && err.code === '23505') return conflict(`That ${what} already exists`, 'duplicate');
+    if (err && err.code === '23503') return badRequest(`A referenced ${what} does not exist`, 'bad_reference');
+    return err;
+  }
+
+  /** A number may be an extension, a paging group, or reserved, never two of them. */
+  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null } = {}) {
+    if (RESERVED_NUMBERS.has(number)) throw conflict(`${number} is reserved (echo test)`, 'number_reserved');
+    const e = (await this.db.query('SELECT id FROM extensions WHERE number = $1', [number])).rows[0];
+    if (e && Number(e.id) !== exceptExtensionId) throw conflict(`${number} is already an extension`, 'number_in_use');
+    const g = (await this.db.query('SELECT id FROM paging_groups WHERE number = $1', [number])).rows[0];
+    if (g && Number(g.id) !== exceptGroupId) throw conflict(`${number} is already a paging group`, 'number_in_use');
+  }
+
+  // --------------------------------------------------------------- extensions
+  async listExtensions() {
+    const { rows } = await this.db.query(
+      `SELECT e.*, u.username FROM extensions e LEFT JOIN users u ON u.extension = e.number ORDER BY e.number`,
+    );
+    return rows.map(publicExtension);
+  }
+
+  async getExtension(id) {
+    const row = (await this.db.query(
+      `SELECT e.*, u.username FROM extensions e LEFT JOIN users u ON u.extension = e.number WHERE e.id = $1`, [id],
+    )).rows[0];
+    if (!row) throw notFound('Extension not found');
+    return publicExtension(row);
+  }
+
+  async getExtensionSecrets(id) {
+    const row = (await this.db.query('SELECT number, secret, phone_secret FROM extensions WHERE id = $1', [id])).rows[0];
+    if (!row) throw notFound('Extension not found');
+    return row;
+  }
+
+  async getExtensionSecretsByNumber(number) {
+    const row = (await this.db.query('SELECT number, secret, phone_secret FROM extensions WHERE number = $1', [number])).rows[0];
+    if (!row) throw notFound('Extension not found');
+    return row;
+  }
+
+  async createExtension(data) {
+    await this.assertNumberFree(data.number);
+    const secret = data.secret || generateSecret();
+    const phoneSecret = data.phone_secret || generateSecret();
+    try {
+      const { rows } = await this.db.query(
+        `INSERT INTO extensions (number, display_name, secret, phone_secret, webrtc_enabled, phone_enabled,
+                                 allow_outbound, outbound_cid, enabled, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        [data.number, data.display_name, secret, phoneSecret, data.webrtc_enabled, data.phone_enabled,
+          data.allow_outbound, data.outbound_cid, data.enabled, data.notes],
+      );
+      return this.getExtension(rows[0].id);
+    } catch (err) {
+      throw this.translate(err, 'extension');
+    }
+  }
+
+  async updateExtension(id, patch) {
+    await this.getExtension(id);
+    const sets = [];
+    const params = [];
+    for (const [key, value] of Object.entries(patch)) {
+      params.push(value);
+      sets.push(`${key} = $${params.length}`);
+    }
+    params.push(id);
+    await this.db.query(`UPDATE extensions SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+    return this.getExtension(id);
+  }
+
+  async regenerateSecrets(id, which) {
+    await this.getExtension(id);
+    const sets = [];
+    const params = [];
+    if (which === 'browser' || which === 'both') { params.push(generateSecret()); sets.push(`secret = $${params.length}`); }
+    if (which === 'phone' || which === 'both') { params.push(generateSecret()); sets.push(`phone_secret = $${params.length}`); }
+    params.push(id);
+    await this.db.query(`UPDATE extensions SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+    return this.getExtensionSecrets(id);
+  }
+
+  async deleteExtension(id) {
+    const ext = await this.getExtension(id);
+    const usedIn = [];
+    const inbound = (await this.db.query(
+      `SELECT name FROM inbound_routes WHERE dest_type = 'extension' AND dest_value = $1`, [ext.number])).rows;
+    for (const r of inbound) usedIn.push(`inbound route "${r.name}"`);
+    const trunks = (await this.db.query(
+      `SELECT name FROM trunks WHERE inbound_default->>'type' = 'extension' AND inbound_default->>'value' = $1`, [ext.number])).rows;
+    for (const t of trunks) usedIn.push(`trunk "${t.name}" default destination`);
+    if (usedIn.length) throw conflict(`Extension ${ext.number} is still used by: ${usedIn.join(', ')}`, 'in_use');
+    await this.db.query('DELETE FROM extensions WHERE id = $1', [id]);
+    return ext;
+  }
+
+  // ------------------------------------------------------------ paging groups
+  async listPagingGroups() {
+    const { rows } = await this.db.query(
+      `SELECT g.*, COALESCE(array_agg(e.number ORDER BY e.number) FILTER (WHERE e.id IS NOT NULL), '{}') AS members
+       FROM paging_groups g
+       LEFT JOIN paging_group_members m ON m.group_id = g.id
+       LEFT JOIN extensions e ON e.id = m.extension_id
+       GROUP BY g.id ORDER BY g.number`,
+    );
+    return rows.map((r) => ({ id: Number(r.id), number: r.number, name: r.name, enabled: r.enabled, members: r.members }));
+  }
+
+  async getPagingGroup(id) {
+    const g = (await this.listPagingGroups()).find((x) => x.id === id);
+    if (!g) throw notFound('Paging group not found');
+    return g;
+  }
+
+  async setGroupMembers(client, groupId, members) {
+    await client.query('DELETE FROM paging_group_members WHERE group_id = $1', [groupId]);
+    if (!members.length) return;
+    const unique = [...new Set(members)];
+    const found = (await client.query('SELECT id, number FROM extensions WHERE number = ANY($1::text[])', [unique])).rows;
+    if (found.length !== unique.length) {
+      const known = new Set(found.map((r) => r.number));
+      throw badRequest(`Unknown extension(s): ${unique.filter((n) => !known.has(n)).join(', ')}`, 'unknown_extension');
+    }
+    for (const row of found) {
+      await client.query('INSERT INTO paging_group_members (group_id, extension_id) VALUES ($1, $2)', [groupId, row.id]);
+    }
+  }
+
+  async createPagingGroup(data) {
+    await this.assertNumberFree(data.number);
+    try {
+      const id = await this.db.tx(async (c) => {
+        const { rows } = await c.query('INSERT INTO paging_groups (number, name, enabled) VALUES ($1,$2,$3) RETURNING id', [data.number, data.name, data.enabled]);
+        await this.setGroupMembers(c, rows[0].id, data.members);
+        return Number(rows[0].id);
+      });
+      return this.getPagingGroup(id);
+    } catch (err) {
+      throw this.translate(err, 'paging group');
+    }
+  }
+
+  async updatePagingGroup(id, patch) {
+    await this.getPagingGroup(id);
+    await this.db.tx(async (c) => {
+      const sets = [];
+      const params = [];
+      for (const key of ['name', 'enabled']) {
+        if (patch[key] !== undefined) { params.push(patch[key]); sets.push(`${key} = $${params.length}`); }
+      }
+      if (sets.length) {
+        params.push(id);
+        await c.query(`UPDATE paging_groups SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+      }
+      if (patch.members) await this.setGroupMembers(c, id, patch.members);
+    });
+    return this.getPagingGroup(id);
+  }
+
+  async deletePagingGroup(id) {
+    const g = await this.getPagingGroup(id);
+    await this.db.query('DELETE FROM paging_groups WHERE id = $1', [id]);
+    return g;
+  }
+
+  // ------------------------------------------------------------------- trunks
+  async listTrunks() {
+    return (await this.db.query('SELECT * FROM trunks ORDER BY name')).rows.map(publicTrunk);
+  }
+
+  async getTrunkRow(id) {
+    const row = (await this.db.query('SELECT * FROM trunks WHERE id = $1', [id])).rows[0];
+    if (!row) throw notFound('Trunk not found');
+    return row;
+  }
+
+  async getTrunk(id) {
+    return publicTrunk(await this.getTrunkRow(id));
+  }
+
+  assertTrunkValid(t) {
+    const issues = trunkRules(t);
+    if (issues.length) throw badRequest('Invalid request', 'validation_error', issues.map((i) => ({ field: i.path.join('.'), message: i.message })));
+  }
+
+  async assertInboundDefault(dest) {
+    if (dest) await this.assertDestination(dest);
+  }
+
+  async assertExtensionExists(number) {
+    const r = (await this.db.query('SELECT 1 FROM extensions WHERE number = $1', [number])).rows[0];
+    if (!r) throw badRequest(`Extension ${number} does not exist`, 'unknown_extension');
+  }
+
+  async createTrunk(data) {
+    this.assertTrunkValid(data);
+    await this.assertInboundDefault(data.inbound_default);
+    try {
+      const { rows } = await this.db.query(
+        `INSERT INTO trunks (name, display_name, kind, auth_mode, host, port, transport, username, password, auth_username,
+                             from_user, from_domain, register_expiry, codecs, dtmf_mode, max_channels, caller_id_num,
+                             caller_id_name, match_ips, inbound_default, qualify, enabled, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`,
+        [data.name, data.display_name, data.kind, data.auth_mode, data.host, data.port, data.transport, data.username,
+          data.password, data.auth_username, data.from_user, data.from_domain, data.register_expiry, data.codecs,
+          data.dtmf_mode, data.max_channels, data.caller_id_num, data.caller_id_name, data.match_ips,
+          data.inbound_default ? JSON.stringify(data.inbound_default) : null, data.qualify, data.enabled, data.notes],
+      );
+      return this.getTrunk(rows[0].id);
+    } catch (err) {
+      throw this.translate(err, 'trunk');
+    }
+  }
+
+  async updateTrunk(id, patch) {
+    const current = await this.getTrunkRow(id);
+    const next = { ...current, ...patch };
+    // An empty/omitted password keeps the stored one.
+    if (patch.password === undefined || patch.password === null) next.password = current.password;
+    this.assertTrunkValid(next);
+    if (patch.inbound_default !== undefined) await this.assertInboundDefault(patch.inbound_default);
+    const sets = [];
+    const params = [];
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === 'password' && (value === undefined || value === null)) continue;
+      params.push(key === 'inbound_default' && value ? JSON.stringify(value) : value);
+      sets.push(`${key} = $${params.length}`);
+    }
+    if (sets.length) {
+      params.push(id);
+      await this.db.query(`UPDATE trunks SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+    }
+    return this.getTrunk(id);
+  }
+
+  async deleteTrunk(id) {
+    const t = await this.getTrunk(id);
+    const used = (await this.db.query(
+      `SELECT r.name FROM outbound_route_trunks rt JOIN outbound_routes r ON r.id = rt.route_id WHERE rt.trunk_id = $1`, [id])).rows;
+    const inbound = (await this.db.query('SELECT name FROM inbound_routes WHERE trunk_id = $1', [id])).rows;
+    const usedIn = [...used.map((r) => `outbound route "${r.name}"`), ...inbound.map((r) => `inbound route "${r.name}"`)];
+    if (usedIn.length) throw conflict(`Trunk "${t.name}" is still used by: ${usedIn.join(', ')}`, 'in_use');
+    await this.db.query('DELETE FROM trunks WHERE id = $1', [id]);
+    return t;
+  }
+
+  // ------------------------------------------------------------ inbound routes
+  async listInbound() {
+    const { rows } = await this.db.query(
+      `SELECT r.*, t.name AS trunk_name FROM inbound_routes r LEFT JOIN trunks t ON t.id = r.trunk_id ORDER BY r.did, r.id`,
+    );
+    return rows.map(inboundShape);
+  }
+
+  async getInbound(id) {
+    const row = (await this.db.query(
+      `SELECT r.*, t.name AS trunk_name FROM inbound_routes r LEFT JOIN trunks t ON t.id = r.trunk_id WHERE r.id = $1`, [id],
+    )).rows[0];
+    if (!row) throw notFound('Inbound route not found');
+    return inboundShape(row);
+  }
+
+  async assertDestination(dest) {
+    if (dest.type === 'extension') await this.assertExtensionExists(dest.value);
+    if (dest.type === 'hangup' && !['', 'busy', 'congestion', 'reject'].includes(dest.value)) {
+      throw badRequest('Hangup destination must be busy, congestion or reject', 'bad_destination');
+    }
+  }
+
+  async createInbound(data) {
+    await this.assertDestination(data.destination);
+    try {
+      const { rows } = await this.db.query(
+        `INSERT INTO inbound_routes (name, did, trunk_id, dest_type, dest_value, cid_name_prefix, enabled)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [data.name, data.did, data.trunk_id, data.destination.type, data.destination.value, data.cid_name_prefix, data.enabled],
+      );
+      return this.getInbound(rows[0].id);
+    } catch (err) {
+      if (err.code === '23505') throw conflict('An inbound route for that number already exists on that trunk', 'duplicate');
+      throw this.translate(err, 'trunk');
+    }
+  }
+
+  async updateInbound(id, patch) {
+    await this.getInbound(id);
+    const cols = { name: 'name', did: 'did', trunk_id: 'trunk_id', cid_name_prefix: 'cid_name_prefix', enabled: 'enabled' };
+    const sets = [];
+    const params = [];
+    for (const [key, col] of Object.entries(cols)) {
+      if (patch[key] !== undefined) { params.push(patch[key]); sets.push(`${col} = $${params.length}`); }
+    }
+    if (patch.destination) {
+      await this.assertDestination(patch.destination);
+      params.push(patch.destination.type); sets.push(`dest_type = $${params.length}`);
+      params.push(patch.destination.value); sets.push(`dest_value = $${params.length}`);
+    }
+    if (sets.length) {
+      params.push(id);
+      try {
+        await this.db.query(`UPDATE inbound_routes SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+      } catch (err) {
+        if (err.code === '23505') throw conflict('An inbound route for that number already exists on that trunk', 'duplicate');
+        throw this.translate(err, 'trunk');
+      }
+    }
+    return this.getInbound(id);
+  }
+
+  async deleteInbound(id) {
+    const r = await this.getInbound(id);
+    await this.db.query('DELETE FROM inbound_routes WHERE id = $1', [id]);
+    return r;
+  }
+
+  // ----------------------------------------------------------- outbound routes
+  async listOutbound() {
+    const { rows } = await this.db.query(
+      `SELECT r.*, COALESCE(json_agg(json_build_object('id', t.id, 'name', t.name) ORDER BY rt.position)
+              FILTER (WHERE t.id IS NOT NULL), '[]') AS trunk_list
+       FROM outbound_routes r
+       LEFT JOIN outbound_route_trunks rt ON rt.route_id = r.id
+       LEFT JOIN trunks t ON t.id = rt.trunk_id
+       GROUP BY r.id ORDER BY r.position, r.id`,
+    );
+    return rows.map(outboundShape);
+  }
+
+  async getOutbound(id) {
+    const r = (await this.listOutbound()).find((x) => x.id === id);
+    if (!r) throw notFound('Outbound route not found');
+    return r;
+  }
+
+  async setRouteTrunks(client, routeId, trunkIds) {
+    await client.query('DELETE FROM outbound_route_trunks WHERE route_id = $1', [routeId]);
+    const unique = [...new Set(trunkIds)];
+    const found = (await client.query('SELECT id FROM trunks WHERE id = ANY($1::bigint[])', [unique])).rows.map((r) => Number(r.id));
+    if (found.length !== unique.length) throw badRequest('One or more trunks do not exist', 'unknown_trunk');
+    let pos = 0;
+    for (const trunkId of unique) {
+      await client.query('INSERT INTO outbound_route_trunks (route_id, trunk_id, position) VALUES ($1,$2,$3)', [routeId, trunkId, pos]);
+      pos += 1;
+    }
+  }
+
+  async createOutbound(data) {
+    try {
+      const id = await this.db.tx(async (c) => {
+        const { rows } = await c.query(
+          `INSERT INTO outbound_routes (name, patterns, strip, prepend, cid_num, emergency, position, enabled)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+          [data.name, data.patterns, data.strip, data.prepend, data.cid_num, data.emergency, data.position, data.enabled],
+        );
+        await this.setRouteTrunks(c, rows[0].id, data.trunks);
+        return Number(rows[0].id);
+      });
+      return this.getOutbound(id);
+    } catch (err) {
+      if (err.code === '23505') throw conflict('An outbound route with that name already exists', 'duplicate');
+      throw err;
+    }
+  }
+
+  async updateOutbound(id, patch) {
+    await this.getOutbound(id);
+    try {
+      await this.db.tx(async (c) => {
+        const sets = [];
+        const params = [];
+        for (const key of ['name', 'patterns', 'strip', 'prepend', 'cid_num', 'emergency', 'position', 'enabled']) {
+          if (patch[key] !== undefined) { params.push(patch[key]); sets.push(`${key} = $${params.length}`); }
+        }
+        if (sets.length) {
+          params.push(id);
+          await c.query(`UPDATE outbound_routes SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+        }
+        if (patch.trunks) await this.setRouteTrunks(c, id, patch.trunks);
+      });
+    } catch (err) {
+      if (err.code === '23505') throw conflict('An outbound route with that name already exists', 'duplicate');
+      throw err;
+    }
+    return this.getOutbound(id);
+  }
+
+  async deleteOutbound(id) {
+    const r = await this.getOutbound(id);
+    await this.db.query('DELETE FROM outbound_routes WHERE id = $1', [id]);
+    return r;
+  }
+
+  // ---------------------------------------------------------------- bootstrap
+  /**
+   * The two seeded extensions get their credentials from the environment on the first start so an existing
+   * deployment keeps working; every other extension gets generated secrets at creation time.
+   */
+  async fillMissingSecrets(seed) {
+    const rows = (await this.db.query('SELECT id, number, secret, phone_secret FROM extensions WHERE secret IS NULL OR phone_secret IS NULL')).rows;
+    for (const r of rows) {
+      const s = r.secret || seed?.[r.number]?.secret || generateSecret();
+      const p = r.phone_secret || seed?.[r.number]?.phone_secret || generateSecret();
+      await this.db.query('UPDATE extensions SET secret = $1, phone_secret = $2 WHERE id = $3', [s, p, r.id]);
+    }
+    return rows.length;
+  }
+
+  // ----------------------------------------------------------------- snapshot
+  /** Everything the renderer and the live registry need, including secrets. Never sent to clients. */
+  async snapshot() {
+    const extensions = (await this.db.query('SELECT * FROM extensions ORDER BY number')).rows;
+    const groups = await this.listPagingGroups();
+    const trunks = (await this.db.query('SELECT * FROM trunks ORDER BY name')).rows;
+    const inbound = (await this.db.query(
+      `SELECT r.*, t.name AS trunk_name FROM inbound_routes r LEFT JOIN trunks t ON t.id = r.trunk_id ORDER BY r.id`)).rows;
+    const outbound = await this.listOutbound();
+    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound };
+  }
+}
+
+const inboundShape = (r) => ({
+  id: Number(r.id),
+  name: r.name,
+  did: r.did,
+  trunk_id: r.trunk_id === null ? null : Number(r.trunk_id),
+  trunk_name: r.trunk_name || null,
+  destination: { type: r.dest_type, value: r.dest_value },
+  cid_name_prefix: r.cid_name_prefix,
+  enabled: r.enabled,
+});
+
+const outboundShape = (r) => ({
+  id: Number(r.id),
+  name: r.name,
+  patterns: r.patterns,
+  strip: r.strip,
+  prepend: r.prepend,
+  cid_num: r.cid_num,
+  emergency: r.emergency,
+  position: r.position,
+  enabled: r.enabled,
+  trunks: r.trunk_list.map((t) => ({ id: Number(t.id), name: t.name })),
+});
+
+module.exports = { PbxStore, generateSecret, publicExtension, publicTrunk };

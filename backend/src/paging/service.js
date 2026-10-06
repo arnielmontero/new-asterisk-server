@@ -1,7 +1,6 @@
 'use strict';
 const { EventEmitter } = require('node:events');
 const { HttpError, conflict } = require('../errors');
-const { PAGING_GROUPS, pagingTargets, isExtension } = require('../extensions/registry');
 
 const AUTH_FAMILY = 'page_auth';
 
@@ -21,9 +20,10 @@ const AUTH_FAMILY = 'page_auth';
  * Emits: 'started', 'ended', 'failed'.
  */
 class PagingService extends EventEmitter {
-  constructor({ ami, state, audit, logger, authTtlSeconds = 20 }) {
+  constructor({ ami, state, registry, audit, logger, authTtlSeconds = 20 }) {
     super();
     this.ami = ami;
+    this.registry = registry;
     this.state = state;
     this.audit = audit;
     this.logger = logger;
@@ -39,10 +39,14 @@ class PagingService extends EventEmitter {
     });
   }
 
+  groupName(group) {
+    return this.registry.group(group)?.name || group;
+  }
+
   current() {
     if (!this.active) return null;
     const { group, username, extension, targets, status, requestedAt, startedAt } = this.active;
-    return { group, name: PAGING_GROUPS[group].name, username, extension, targets, status, requestedAt, startedAt };
+    return { group, name: this.groupName(group), username, extension, targets, status, requestedAt, startedAt };
   }
 
   /** Authorise a page. Throws HttpError with a meaningful status on every refusal. */
@@ -53,12 +57,13 @@ class PagingService extends EventEmitter {
     };
 
     if (!user.extension) return fail(new HttpError(409, 'no_extension', 'No SIP extension is assigned to your account'), 'no_extension');
-    const targets = pagingTargets(group, user.extension);
+    if (!this.registry.isPagingGroup(group)) return fail(new HttpError(400, 'unknown_group', 'That paging group does not exist or is disabled'), 'unknown_group');
+    const targets = this.registry.pagingTargets(group, user.extension);
     if (targets.length === 0) {
       return fail(new HttpError(422, 'no_targets', 'There is nobody to page: you are the only member of that group'), 'no_targets');
     }
     if (!this.ami.isConnected()) return fail(new HttpError(503, 'ami_unavailable', 'The telephony system is unavailable'), 'ami_unavailable');
-    if (this.active) return fail(conflict(`A page to ${PAGING_GROUPS[this.active.group].name} is already in progress`, 'page_in_progress'), 'page_in_progress');
+    if (this.active) return fail(conflict(`A page to ${this.groupName(this.active.group)} is already in progress`, 'page_in_progress'), 'page_in_progress');
     const mine = this.state.get(user.extension);
     if (!mine?.registered) {
       return fail(conflict('Your SIP client is not registered. Enable audio and wait for it to register, then try again.', 'sip_not_registered'), 'sip_not_registered');
@@ -97,10 +102,10 @@ class PagingService extends EventEmitter {
       action: 'paging.request',
       target: group,
       ip,
-      details: { group, name: PAGING_GROUPS[group].name, targets },
+      details: { group, name: this.groupName(group), targets },
     });
     this.logger.info({ user: user.username, group, targets }, 'page authorised');
-    return { group, name: PAGING_GROUPS[group].name, extension: user.extension, targets, authorizedForSeconds: this.authTtlSeconds };
+    return { group, name: this.groupName(group), extension: user.extension, targets, authorizedForSeconds: this.authTtlSeconds };
   }
 
   /** Force-end the current page (hang up the operator's channels and drop any unused authorisation). */
@@ -126,13 +131,13 @@ class PagingService extends EventEmitter {
     if (!['PageStarted', 'PageEnded', 'PageDenied'].includes(name)) return;
     const group = String(evt.Group || '');
     const caller = String(evt.Caller || '');
-    if (!PAGING_GROUPS[group] || !isExtension(caller)) return;
+    if (!this.registry.isPagingGroup(group) || !this.registry.isExtension(caller)) return;
 
     if (name === 'PageStarted') {
       let active = this.active;
       if (!active || active.extension !== caller || active.group !== group) {
         // Page we did not authorise in this process (e.g. backend restarted mid-request): still reflect reality.
-        active = { group, username: null, userId: null, extension: caller, targets: pagingTargets(group, caller), requestedAt: new Date() };
+        active = { group, username: null, userId: null, extension: caller, targets: this.registry.pagingTargets(group, caller), requestedAt: new Date() };
         this.active = active;
       }
       clearTimeout(this.timer);
@@ -197,7 +202,7 @@ class PagingService extends EventEmitter {
         })
         .catch(() => {});
     }
-    const payload = { group: active.group, name: PAGING_GROUPS[active.group].name, extension: active.extension, username: active.username, reason, durationSeconds: seconds };
+    const payload = { group: active.group, name: this.groupName(active.group), extension: active.extension, username: active.username, reason, durationSeconds: seconds };
     if (notify) this.emit('failed', payload);
     else this.emit('ended', payload);
   }

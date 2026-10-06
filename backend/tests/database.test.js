@@ -48,7 +48,7 @@ describe('database', () => {
     try {
       const results = await Promise.allSettled([fresh.db.migrate(MIGRATIONS), fresh.db.migrate(MIGRATIONS), fresh.db.migrate(MIGRATIONS)]);
       assert.ok(results.every((r) => r.status === 'fulfilled'), JSON.stringify(results.map((r) => r.reason?.message)));
-      assert.equal((await fresh.db.query('SELECT count(*) AS n FROM schema_migrations')).rows[0].n, '1');
+      assert.equal((await fresh.db.query('SELECT count(*) AS n FROM schema_migrations')).rows[0].n, String(fs.readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql')).length));
     } finally {
       await fresh.cleanup();
     }
@@ -95,7 +95,7 @@ describe('database', () => {
     await reject(ins, ['Upper.Case', hash, 'user', null], '23514');
     await reject(ins, ['ab', hash, 'user', null], '23514');
     await reject(ins, ['white space', hash, 'user', null], '23514');
-    await reject(ins, ['bad.ext', hash, 'user', '2000'], '23514');
+    await reject(ins, ['bad.ext', hash, 'user', '2000'], '23503'); // no such extension (foreign key)
     await reject(ins, [null, hash, 'user', null], '23502');
     await reject(ins, ['no.hash', null, 'user', null], '23502');
   });

@@ -1,6 +1,5 @@
 'use strict';
 const { EventEmitter } = require('node:events');
-const { EXTENSIONS, EXTENSION_NUMBERS, extensionFromEndpoint, extensionFromChannel, isExtension } = require('./registry');
 
 const AVAILABLE_CONTACT = new Set(['Created', 'Updated', 'Reachable', 'NonQualified', 'Avail']);
 const UNAVAILABLE_CONTACT = new Set(['Removed', 'Unreachable', 'Unavail', 'Unavailable']);
@@ -27,21 +26,23 @@ function normalizeDeviceState(raw) {
  * Emits: 'change' (public extension object), 'call.started', 'call.ended'.
  */
 class ExtensionState extends EventEmitter {
-  constructor({ ami, logger }) {
+  constructor({ ami, registry, logger }) {
     super();
     this.ami = ami;
+    this.registry = registry;
     this.logger = logger;
     this.endpoints = new Map(); // endpoint name -> { contact: bool, device: string }
-    for (const ext of EXTENSION_NUMBERS) {
-      this.endpoints.set(ext, { contact: false, device: 'UNKNOWN' });
-      this.endpoints.set(`${ext}-phone`, { contact: false, device: 'UNKNOWN' });
-    }
+    this.rebuild();
     this.channels = new Map(); // uniqueid -> channel name
     this.calls = new Map(); // caller uniqueid -> { from, to, startedAt }
     this.paging = null; // { group, caller, targets }
     this.published = new Map(); // ext -> JSON of last emitted state
     this.synced = false;
 
+    registry.on('changed', () => {
+      this.rebuild();
+      this.publishAll();
+    });
     ami.on('event', (evt) => this.onEvent(evt));
     ami.on('connected', () => this.sync());
     ami.on('disconnected', () => {
@@ -50,6 +51,20 @@ class ExtensionState extends EventEmitter {
       this.calls.clear();
       this.publishAll();
     });
+  }
+
+  /** Track exactly the endpoints of the configured extensions; keep what is already known about them. */
+  rebuild() {
+    const wanted = new Set();
+    for (const ext of this.registry.extensionNumbers()) {
+      wanted.add(ext);
+      wanted.add(`${ext}-phone`);
+    }
+    for (const name of [...this.endpoints.keys()]) if (!wanted.has(name)) this.endpoints.delete(name);
+    for (const name of wanted) if (!this.endpoints.has(name)) this.endpoints.set(name, { contact: false, device: 'UNKNOWN' });
+    for (const ext of [...(this.published?.keys() || [])]) {
+      if (!this.registry.isExtension(ext)) this.published.delete(ext);
+    }
   }
 
   // ------------------------------------------------------------------ sync
@@ -94,7 +109,7 @@ class ExtensionState extends EventEmitter {
         if (!ep) return;
         if (AVAILABLE_CONTACT.has(evt.ContactStatus)) ep.contact = true;
         else if (UNAVAILABLE_CONTACT.has(evt.ContactStatus)) ep.contact = false;
-        this.publish(extensionFromEndpoint(evt.EndpointName));
+        this.publish(this.registry.extensionFromEndpoint(evt.EndpointName));
         return;
       }
       case 'DeviceStateChange': {
@@ -103,7 +118,7 @@ class ExtensionState extends EventEmitter {
         const ep = this.endpoints.get(device.slice(6));
         if (!ep) return;
         ep.device = normalizeDeviceState(evt.State);
-        this.publish(extensionFromEndpoint(device.slice(6)));
+        this.publish(this.registry.extensionFromEndpoint(device.slice(6)));
         return;
       }
       case 'Newchannel':
@@ -120,7 +135,7 @@ class ExtensionState extends EventEmitter {
           this.calls.delete(evt.Uniqueid);
           this.emit('call.ended', { from: call.from, to: call.to, durationSeconds: Math.round((Date.now() - call.startedAt) / 1000) });
         }
-        const ext = extensionFromChannel(channel);
+        const ext = this.registry.extensionFromChannel(channel);
         if (ext) this.publish(ext);
         return;
       }
@@ -130,8 +145,8 @@ class ExtensionState extends EventEmitter {
 
   onDialEnd(evt) {
     if (evt.DialStatus !== 'ANSWER' || this.paging) return;
-    const from = extensionFromChannel(evt.Channel) || (isExtension(evt.CallerIDNum) ? evt.CallerIDNum : null);
-    const to = extensionFromChannel(evt.DestChannel) || (isExtension(evt.DestCallerIDNum) ? evt.DestCallerIDNum : null);
+    const from = this.registry.extensionFromChannel(evt.Channel) || (this.registry.isExtension(evt.CallerIDNum) ? evt.CallerIDNum : null);
+    const to = this.registry.extensionFromChannel(evt.DestChannel) || (this.registry.isExtension(evt.DestCallerIDNum) ? evt.DestCallerIDNum : null);
     if (!from || !to || from === to) return;
     this.calls.set(evt.UniqueID || evt.Uniqueid, { from, to, startedAt: Date.now() });
     this.emit('call.started', { from, to });
@@ -159,7 +174,7 @@ class ExtensionState extends EventEmitter {
     else state = 'Offline';
     return {
       extension: ext,
-      name: EXTENSIONS[ext].name,
+      name: this.registry.extension(ext).name,
       state,
       registered: state === 'Unknown' ? null : registered,
       clients: {
@@ -170,20 +185,20 @@ class ExtensionState extends EventEmitter {
   }
 
   snapshot() {
-    return EXTENSION_NUMBERS.map((ext) => this.compute(ext));
+    return this.registry.extensionNumbers().map((ext) => this.compute(ext));
   }
 
   get(ext) {
-    return isExtension(ext) ? this.compute(ext) : null;
+    return this.registry.isExtension(ext) ? this.compute(ext) : null;
   }
 
   /** Live PJSIP channels belonging to an extension (browser or phone). */
   channelsFor(ext) {
-    return [...this.channels.values()].filter((c) => extensionFromChannel(c) === ext);
+    return [...this.channels.values()].filter((c) => this.registry.extensionFromChannel(c) === ext);
   }
 
   publish(ext) {
-    if (!ext || !isExtension(ext)) return;
+    if (!ext || !this.registry.isExtension(ext)) return;
     const current = this.compute(ext);
     const json = JSON.stringify(current);
     if (this.published.get(ext) === json) return;
@@ -192,7 +207,7 @@ class ExtensionState extends EventEmitter {
   }
 
   publishAll() {
-    for (const ext of EXTENSION_NUMBERS) this.publish(ext);
+    for (const ext of this.registry.extensionNumbers()) this.publish(ext);
   }
 }
 
