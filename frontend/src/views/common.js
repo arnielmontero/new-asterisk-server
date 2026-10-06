@@ -69,8 +69,8 @@ export const fmtDuration = (s) => {
 // A destination is where a call goes next: { type, value }. One picker is used by every form that routes calls.
 
 export async function loadDestinationData() {
-  const [e, g, t] = await Promise.all([api('GET', '/pbx/extensions'), api('GET', '/pbx/ring-groups'), api('GET', '/pbx/time-conditions')]);
-  return { extensions: e.extensions, ringGroups: g.groups, timeConditions: t.conditions };
+  const [e, g, t, i, a] = await Promise.all([api('GET', '/pbx/extensions'), api('GET', '/pbx/ring-groups'), api('GET', '/pbx/time-conditions'), api('GET', '/pbx/ivrs'), api('GET', '/pbx/announcements')]);
+  return { extensions: e.extensions, ringGroups: g.groups, timeConditions: t.conditions, ivrs: i.ivrs, announcements: a.announcements };
 }
 
 export const describeDestination = (d, data) => {
@@ -78,6 +78,8 @@ export const describeDestination = (d, data) => {
   if (d.type === 'extension') { const x = data?.extensions?.find((e) => e.number === d.value); return `Extension ${d.value}${x ? ` ${x.display_name}` : ''}`; }
   if (d.type === 'ringgroup') { const x = data?.ringGroups?.find((e) => e.number === d.value); return `Ring group ${d.value}${x ? ` ${x.name}` : ''}`; }
   if (d.type === 'timecondition') { const x = data?.timeConditions?.find((e) => String(e.id) === d.value); return `Time condition ${x ? x.name : d.value}`; }
+  if (d.type === 'ivr') { const x = data?.ivrs?.find((e) => e.number === d.value); return `Menu ${d.value}${x ? ` ${x.name}` : ''}`; }
+  if (d.type === 'announcement') { const x = data?.announcements?.find((e) => String(e.id) === d.value); return `Announcement ${x ? x.name : d.value}`; }
   if (d.type === 'echo') return 'Echo test';
   return `Reject${d.value ? ` (${d.value})` : ''}`;
 };
@@ -92,6 +94,8 @@ export function destinationPicker(data, { value = null, allowNone = false, noneL
     { value: 'extension', label: 'Extension' },
     ...(data.ringGroups?.length ? [{ value: 'ringgroup', label: 'Ring group' }] : []),
     ...(data.timeConditions?.length ? [{ value: 'timecondition', label: 'Time condition' }] : []),
+    ...(data.ivrs?.length ? [{ value: 'ivr', label: 'Menu (IVR)' }] : []),
+    ...(data.announcements?.length ? [{ value: 'announcement', label: 'Announcement' }] : []),
     { value: 'echo', label: 'Echo test' },
     { value: 'hangup', label: 'Reject / busy tone' },
   ];
@@ -100,6 +104,8 @@ export function destinationPicker(data, { value = null, allowNone = false, noneL
   const options = (type) => {
     if (type === 'extension') return data.extensions.filter((x) => `extension:${x.number}` !== exclude).map((x) => ({ value: x.number, label: `${x.number} ${x.display_name}` }));
     if (type === 'ringgroup') return data.ringGroups.filter((x) => `ringgroup:${x.number}` !== exclude).map((x) => ({ value: x.number, label: `${x.number} ${x.name}` }));
+    if (type === 'ivr') return data.ivrs.filter((x) => `ivr:${x.number}` !== exclude).map((x) => ({ value: x.number, label: `${x.number} ${x.name}` }));
+    if (type === 'announcement') return data.announcements.filter((x) => `announcement:${x.id}` !== exclude).map((x) => ({ value: String(x.id), label: x.name }));
     if (type === 'timecondition') return data.timeConditions.filter((x) => `timecondition:${x.id}` !== exclude).map((x) => ({ value: String(x.id), label: x.name }));
     if (type === 'hangup') return [{ value: 'reject', label: 'Rejected' }, { value: 'busy', label: 'Busy tone' }, { value: 'congestion', label: 'Congestion tone' }];
     return [];

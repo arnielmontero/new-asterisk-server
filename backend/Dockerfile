@@ -13,7 +13,7 @@ COPY migrations ./migrations
 
 # Shared with Asterisk: the backend renders extensions/trunks here. Created before USER so the named volume
 # inherits node ownership on first use.
-RUN mkdir -p /pbx-generated && chown node:node /pbx-generated
+RUN mkdir -p /pbx-generated /pbx-media/prompts && chown -R node:node /pbx-generated /pbx-media
 
 USER node
 EXPOSE 3000

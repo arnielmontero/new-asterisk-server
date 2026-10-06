@@ -4,6 +4,7 @@ const { z } = require('zod');
 const { schemas } = require('./schemas');
 const { validate } = require('../validation/middleware');
 const { clientIp } = require('../auth/middleware');
+const { badRequest } = require('../errors');
 
 const regenerateBody = z.strictObject({ which: z.enum(['browser', 'phone', 'both']).optional().default('both') });
 
@@ -275,6 +276,114 @@ function pbxRoutes({ store, applier, trunkStatus, audit, config }) {
       res.json({ status: 'deleted', name: t.name });
     } catch (err) {
       await record(req, 'pbx.time_condition.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  // ------------------------------------------------------------------- prompts
+  router.get('/prompts', async (_req, res) => {
+    res.json({ prompts: await store.listPrompts() });
+  });
+
+  // The browser converts MP3 / recordings to WAV; the server accepts any PCM WAV and converts it to 8 kHz mono.
+  router.post('/prompts', express.raw({ type: () => true, limit: '12mb' }), validate({ query: schemas.uploadPrompt }), async (req, res) => {
+    try {
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw badRequest('Send the WAV file as the request body', 'bad_audio');
+      const p = await store.createPrompt(req.valid.query.name, req.body);
+      await record(req, 'pbx.prompt.create', p.name, { duration_ms: p.duration_ms, size_bytes: p.size_bytes });
+      res.status(201).json({ prompt: p });
+    } catch (err) {
+      await record(req, 'pbx.prompt.create', req.valid.query?.name || 'upload', { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  router.get('/prompts/:id/audio', id, async (req, res) => {
+    await store.getPrompt(req.valid.params.id);
+    res.set({ 'Cache-Control': 'private, no-cache', 'Content-Type': 'audio/wav' });
+    res.sendFile(store.promptFile(req.valid.params.id), (err) => { if (err && !res.headersSent) res.status(404).json({ error: { code: 'not_found', message: 'Audio file is missing' } }); });
+  });
+
+  router.patch('/prompts/:id', validate({ params: schemas.idParam, body: schemas.renamePrompt }), async (req, res) => {
+    const p = await store.renamePrompt(req.valid.params.id, req.valid.body.name);
+    await record(req, 'pbx.prompt.rename', p.name);
+    res.json({ prompt: p });
+  });
+
+  router.delete('/prompts/:id', id, async (req, res) => {
+    try {
+      const p = await store.deletePrompt(req.valid.params.id);
+      await record(req, 'pbx.prompt.delete', p.name);
+      res.json({ status: 'deleted', name: p.name });
+    } catch (err) {
+      await record(req, 'pbx.prompt.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  // ------------------------------------------------------------- announcements
+  router.get('/announcements', async (_req, res) => {
+    res.json({ announcements: await store.listAnnouncements() });
+  });
+
+  router.post('/announcements', validate({ body: schemas.createAnnouncement }), async (req, res) => {
+    const a = await store.createAnnouncement(req.valid.body);
+    await record(req, 'pbx.announcement.create', a.name, { prompt: a.prompt_name });
+    changed('announcement.create');
+    res.status(201).json({ announcement: a });
+  });
+
+  router.patch('/announcements/:id', validate({ params: schemas.idParam, body: schemas.patchAnnouncement }), async (req, res) => {
+    const a = await store.updateAnnouncement(req.valid.params.id, req.valid.body);
+    await record(req, 'pbx.announcement.update', a.name, { fields: Object.keys(req.valid.body) });
+    changed('announcement.update');
+    res.json({ announcement: a });
+  });
+
+  router.delete('/announcements/:id', id, async (req, res) => {
+    try {
+      const a = await store.deleteAnnouncement(req.valid.params.id);
+      await record(req, 'pbx.announcement.delete', a.name);
+      changed('announcement.delete');
+      res.json({ status: 'deleted', name: a.name });
+    } catch (err) {
+      await record(req, 'pbx.announcement.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  // ---------------------------------------------------------------------- menus
+  router.get('/ivrs', async (_req, res) => {
+    res.json({ ivrs: await store.listIvrs() });
+  });
+
+  router.post('/ivrs', validate({ body: schemas.createIvr }), async (req, res) => {
+    try {
+      const i = await store.createIvr(req.valid.body);
+      await record(req, 'pbx.ivr.create', i.number, { name: i.name, options: i.options.map((o) => o.digit) });
+      changed('ivr.create');
+      res.status(201).json({ ivr: i });
+    } catch (err) {
+      await record(req, 'pbx.ivr.create', req.valid.body.number, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  router.patch('/ivrs/:id', validate({ params: schemas.idParam, body: schemas.patchIvr }), async (req, res) => {
+    const i = await store.updateIvr(req.valid.params.id, req.valid.body);
+    await record(req, 'pbx.ivr.update', i.number, { fields: Object.keys(req.valid.body) });
+    changed('ivr.update');
+    res.json({ ivr: i });
+  });
+
+  router.delete('/ivrs/:id', id, async (req, res) => {
+    try {
+      const i = await store.deleteIvr(req.valid.params.id);
+      await record(req, 'pbx.ivr.delete', i.number);
+      changed('ivr.delete');
+      res.json({ status: 'deleted', number: i.number });
+    } catch (err) {
+      await record(req, 'pbx.ivr.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
       throw err;
     }
   });

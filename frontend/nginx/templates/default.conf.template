@@ -71,6 +71,22 @@ server {
         proxy_read_timeout    30s;
     }
 
+    # Audio prompt upload: the only endpoint that accepts a large body (a WAV recording, 12 MB at most; the backend
+    # enforces the same limit). Everything else keeps the 16 KB cap set above.
+    location = /api/pbx/prompts {
+        client_max_body_size 13m;
+        proxy_pass $backend_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    60s;
+        proxy_send_timeout    60s;
+    }
+
     # Socket.IO (WebSocket upgrade, long-lived)
     location /socket.io/ {
         proxy_pass $backend_upstream;

@@ -212,6 +212,10 @@ function buildPhonePanel(softphone) {
       h('div', { class: `banner ${c.state === 'connected' ? 'ok' : 'info'}`, id: 'call-banner' },
         h('strong', null, c.direction === 'in' ? `From ${who}` : `To ${who}`), ` – ${stateText}`,
         c.paging && c.direction === 'in' && c.state === 'connected' ? ' (listen only)' : ''),
+      c.state === 'connected' && !c.paging
+        ? h('div', { class: 'keypad', id: 'keypad', 'aria-label': 'Keypad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map((k) =>
+            h('button', { class: 'btn small', type: 'button', 'data-key': k, onclick: () => softphone.sendDtmf(k) }, k)))
+        : null,
       h('div', { class: 'actions' },
         s.incoming
           ? [h('button', { class: 'btn primary', id: 'answer', onclick: () => softphone.answer() }, 'Answer'),

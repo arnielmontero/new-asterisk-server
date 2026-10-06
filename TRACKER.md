@@ -194,7 +194,10 @@ marked done.
 - [x] Reload only what changed (a dialplan-only change never touches PJSIP); trunk status read from the endpoint list (a trunk now shows ONLINE in seconds); two trunks cannot share an address
 - [x] **Verified:** 244 backend tests; 10 real-browser scenarios (`tests/e2e/callflow.test.js`: DND, forwarding, ring-all, sequential, DND skipping, time condition via an inbound trunk call with overrides and a holiday); earlier browser suites re-run
 - Defects found by testing: CDR destination became `s` after a Goto into a destination context (the dialled number is now kept); `PJSIPShowContacts` answers "No Contacts found" for trunks, which wiped trunk reachability; two IP trunks with the same address made inbound calls land in the wrong trunk's routes
-#### B2 — audio prompts, announcements, IVR menus (not started)
+#### B2 — audio prompts, announcements, IVR menus (done 2026-10-06)
+- [x] Prompt library (WAV any rate/format -> 8 kHz mono, server side in pure JS; MP3/M4A/OGG and microphone recordings converted in the browser), preview, rename, delete-protection while in use; shared `pbx_media` volume; Nginx allows the large body on the upload URL only
+- [x] Announcements (play then continue/hang up) and IVR menus (keys 0-9 * #, timeout, repeats, fall-back, optional direct extension dialling, self-return allowed, loops cut by the hop counter); both are destinations everywhere; new softphone keypad (DTMF)
+- [x] **Verified:** 264 backend tests (WAV formats incl. 8/16/24/32-bit and float, hostile names, oversized uploads, orphan files, number-space sharing, reference protection, dialplan-only reload); 10 real-browser scenarios (`tests/e2e/ivr.test.js`) with measured prompt tones, DTMF routing and fall-back timing
 #### B3 — call queues with agents (not started)
 #### B4 — voicemail and call recording (not started)
 

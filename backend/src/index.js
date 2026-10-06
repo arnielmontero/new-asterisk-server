@@ -50,7 +50,7 @@ async function main() {
     logger.info('administrator already exists; ADMIN_PASSWORD not applied');
   }
 
-  const store = new PbxStore(db);
+  const store = new PbxStore(db, { mediaDir: config.pbxMediaDir });
   const filled = await store.fillMissingSecrets(config.seedSecrets);
   if (filled) logger.info({ extensions: filled }, 'initial extension credentials set');
   const registry = new PbxRegistry();

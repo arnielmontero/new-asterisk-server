@@ -116,7 +116,8 @@ async function createHarness({ env = {}, pagingTtl = 20, migrate = true } = {}) 
   const audit = new AuditService(db, logger);
   const authService = new AuthService({ config, users, audit, logger });
   const ami = new FakeAmi();
-  const store = new PbxStore(db);
+  const mediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pbx-media-'));
+  const store = new PbxStore(db, { mediaDir });
   const registry = new PbxRegistry();
   if (migrate) {
     await store.fillMissingSecrets(config.seedSecrets);
@@ -163,6 +164,7 @@ async function createHarness({ env = {}, pagingTtl = 20, migrate = true } = {}) 
     trunkStatus.stop();
     clearTimeout(applier.timer);
     fs.rmSync(generatedDir, { recursive: true, force: true });
+    fs.rmSync(mediaDir, { recursive: true, force: true });
     await db.close().catch(() => {});
     await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
     await admin.end();
@@ -176,7 +178,7 @@ async function createHarness({ env = {}, pagingTtl = 20, migrate = true } = {}) 
     ami.register('1002');
   }
 
-  return { app, agent, reset, config, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, generatedDir, login, makeUser, seedAdmin, cleanup, dbName, disconnected, logger };
+  return { app, agent, reset, config, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, generatedDir, mediaDir, login, makeUser, seedAdmin, cleanup, dbName, disconnected, logger };
 }
 
 const auditCount = async (db, where = 'true', params = []) =>

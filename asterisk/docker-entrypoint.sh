@@ -74,6 +74,12 @@ for f in pjsip_generated.conf extensions_generated.conf; do
 done
 chmod 0777 "$GEN_DIR"
 
+# Media shared with the backend: prompts are written by the backend and played here; voicemail and recordings are
+# written here and served by the backend. Flat directories (no sub-directories) keep permissions simple.
+MEDIA_DIR=/pbx-media
+mkdir -p "$MEDIA_DIR/prompts" "$MEDIA_DIR/voicemail" "$MEDIA_DIR/recordings"
+chmod 0777 "$MEDIA_DIR" "$MEDIA_DIR/prompts" "$MEDIA_DIR/voicemail" "$MEDIA_DIR/recordings"
+
 rm -rf "$ETC_DIR" "$KEY_DIR"
 mkdir -p "$ETC_DIR" "$KEY_DIR"
 

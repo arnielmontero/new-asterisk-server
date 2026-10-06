@@ -1,5 +1,8 @@
 'use strict';
 const crypto = require('node:crypto');
+const fsp = require('node:fs/promises');
+const path = require('node:path');
+const { toTelephonyWav } = require('./wav');
 const { conflict, notFound, badRequest } = require('../errors');
 const { RESERVED_NUMBERS, trunkRules } = require('./schemas');
 const destinations = require('./destinations');
@@ -40,8 +43,9 @@ const publicTrunk = (r) => {
 };
 
 class PbxStore {
-  constructor(db) {
+  constructor(db, { mediaDir = null } = {}) {
     this.db = db;
+    this.mediaDir = mediaDir;
   }
 
   // ------------------------------------------------------------------ helpers
@@ -52,7 +56,7 @@ class PbxStore {
   }
 
   /** A number may be an extension, a paging group, or reserved, never two of them. */
-  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null, exceptRingGroupId = null } = {}) {
+  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null, exceptRingGroupId = null, exceptIvrId = null } = {}) {
     if (RESERVED_NUMBERS.has(number)) throw conflict(`${number} is reserved (echo test)`, 'number_reserved');
     const e = (await this.db.query('SELECT id FROM extensions WHERE number = $1', [number])).rows[0];
     if (e && Number(e.id) !== exceptExtensionId) throw conflict(`${number} is already an extension`, 'number_in_use');
@@ -60,6 +64,8 @@ class PbxStore {
     if (g && Number(g.id) !== exceptGroupId) throw conflict(`${number} is already a paging group`, 'number_in_use');
     const rg = (await this.db.query('SELECT id FROM ring_groups WHERE number = $1', [number])).rows[0];
     if (rg && Number(rg.id) !== exceptRingGroupId) throw conflict(`${number} is already a ring group`, 'number_in_use');
+    const iv = (await this.db.query('SELECT id FROM ivrs WHERE number = $1', [number])).rows[0];
+    if (iv && Number(iv.id) !== exceptIvrId) throw conflict(`${number} is already a menu`, 'number_in_use');
   }
 
   // --------------------------------------------------------------- extensions
@@ -604,6 +610,199 @@ class PbxStore {
     return t;
   }
 
+  // ------------------------------------------------------------------ prompts
+  promptFile(id) {
+    if (!this.mediaDir) throw new Error('media directory is not configured');
+    return path.join(this.mediaDir, 'prompts', `${Number(id)}.wav`);
+  }
+
+  async listPrompts() {
+    const { rows } = await this.db.query(
+      `SELECT p.*, (EXISTS (SELECT 1 FROM ivrs i WHERE i.prompt_id = p.id) OR EXISTS (SELECT 1 FROM announcements a WHERE a.prompt_id = p.id)) AS in_use
+       FROM prompts p ORDER BY p.name`,
+    );
+    return rows.map((r) => ({ id: Number(r.id), name: r.name, duration_ms: r.duration_ms, size_bytes: r.size_bytes, in_use: r.in_use, created_at: r.created_at }));
+  }
+
+  async getPrompt(id) {
+    const p = (await this.listPrompts()).find((x) => x.id === id);
+    if (!p) throw notFound('Prompt not found');
+    return p;
+  }
+
+  /** Convert an uploaded WAV to telephone format and store it. The database row and the file are created together. */
+  async createPrompt(name, buffer) {
+    const { wav, durationMs } = toTelephonyWav(buffer);
+    let id;
+    try {
+      const { rows } = await this.db.query('INSERT INTO prompts (name, duration_ms, size_bytes) VALUES ($1,$2,$3) RETURNING id', [name, durationMs, wav.length]);
+      id = Number(rows[0].id);
+    } catch (err) {
+      if (err.code === '23505') throw conflict('A prompt with that name already exists', 'duplicate');
+      throw err;
+    }
+    try {
+      const file = this.promptFile(id);
+      await fsp.mkdir(path.dirname(file), { recursive: true });
+      await fsp.writeFile(file, wav, { mode: 0o644 });
+    } catch (err) {
+      await this.db.query('DELETE FROM prompts WHERE id = $1', [id]);
+      throw err;
+    }
+    return this.getPrompt(id);
+  }
+
+  async renamePrompt(id, name) {
+    await this.getPrompt(id);
+    try {
+      await this.db.query('UPDATE prompts SET name = $1 WHERE id = $2', [name, id]);
+    } catch (err) {
+      if (err.code === '23505') throw conflict('A prompt with that name already exists', 'duplicate');
+      throw err;
+    }
+    return this.getPrompt(id);
+  }
+
+  async deletePrompt(id) {
+    const p = await this.getPrompt(id);
+    if (p.in_use) {
+      const ivrs = (await this.db.query('SELECT number FROM ivrs WHERE prompt_id = $1', [id])).rows.map((r) => `menu ${r.number}`);
+      const anns = (await this.db.query('SELECT name FROM announcements WHERE prompt_id = $1', [id])).rows.map((r) => `announcement "${r.name}"`);
+      throw conflict(`Prompt "${p.name}" is still used by: ${[...ivrs, ...anns].join(', ')}`, 'in_use');
+    }
+    await this.db.query('DELETE FROM prompts WHERE id = $1', [id]);
+    await fsp.unlink(this.promptFile(id)).catch((err) => { if (err.code !== 'ENOENT') throw err; });
+    return p;
+  }
+
+  async assertPromptExists(id) {
+    if (id === null || id === undefined) return;
+    const r = (await this.db.query('SELECT 1 FROM prompts WHERE id = $1', [id])).rows[0];
+    if (!r) throw badRequest('That prompt does not exist', 'unknown_prompt');
+  }
+
+  // ------------------------------------------------------------- announcements
+  async listAnnouncements() {
+    const { rows } = await this.db.query(
+      'SELECT a.*, p.name AS prompt_name FROM announcements a JOIN prompts p ON p.id = a.prompt_id ORDER BY a.name',
+    );
+    return rows.map((r) => ({ id: Number(r.id), name: r.name, prompt_id: Number(r.prompt_id), prompt_name: r.prompt_name, next_dest: r.next_dest || null, enabled: r.enabled }));
+  }
+
+  async getAnnouncement(id) {
+    const a = (await this.listAnnouncements()).find((x) => x.id === id);
+    if (!a) throw notFound('Announcement not found');
+    return a;
+  }
+
+  async createAnnouncement(data) {
+    await this.assertPromptExists(data.prompt_id);
+    await destinations.assertValid(this.db, data.next_dest);
+    try {
+      const { rows } = await this.db.query(
+        'INSERT INTO announcements (name, prompt_id, next_dest, enabled) VALUES ($1,$2,$3,$4) RETURNING id',
+        [data.name, data.prompt_id, data.next_dest ? JSON.stringify(data.next_dest) : null, data.enabled],
+      );
+      return this.getAnnouncement(Number(rows[0].id));
+    } catch (err) {
+      if (err.code === '23505') throw conflict('An announcement with that name already exists', 'duplicate');
+      throw err;
+    }
+  }
+
+  async updateAnnouncement(id, patch) {
+    await this.getAnnouncement(id);
+    if (patch.prompt_id !== undefined) await this.assertPromptExists(patch.prompt_id);
+    if (patch.next_dest) {
+      if (patch.next_dest.type === 'announcement' && patch.next_dest.value === String(id)) throw badRequest('An announcement cannot continue to itself', 'bad_destination');
+      await destinations.assertValid(this.db, patch.next_dest);
+    }
+    const sets = [];
+    const params = [];
+    for (const [key, value] of Object.entries(patch)) {
+      params.push(key === 'next_dest' && value ? JSON.stringify(value) : value);
+      sets.push(`${key} = $${params.length}`);
+    }
+    params.push(id);
+    try {
+      await this.db.query(`UPDATE announcements SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+    } catch (err) {
+      if (err.code === '23505') throw conflict('An announcement with that name already exists', 'duplicate');
+      throw err;
+    }
+    return this.getAnnouncement(id);
+  }
+
+  async deleteAnnouncement(id) {
+    const a = await this.getAnnouncement(id);
+    const usedIn = await destinations.references(this.db, 'announcement', String(id), { exclude: `announcement:${id}` });
+    if (usedIn.length) throw conflict(`Announcement "${a.name}" is still used by: ${usedIn.join(', ')}`, 'in_use');
+    await this.db.query('DELETE FROM announcements WHERE id = $1', [id]);
+    return a;
+  }
+
+  // ---------------------------------------------------------------------- menus
+  async listIvrs() {
+    const { rows } = await this.db.query('SELECT i.*, p.name AS prompt_name FROM ivrs i LEFT JOIN prompts p ON p.id = i.prompt_id ORDER BY i.number');
+    return rows.map((r) => ({
+      id: Number(r.id), number: r.number, name: r.name, prompt_id: r.prompt_id === null ? null : Number(r.prompt_id), prompt_name: r.prompt_name || null,
+      timeout_secs: r.timeout_secs, max_repeats: r.max_repeats, options: r.options, fail_dest: r.fail_dest || null,
+      allow_extension_dial: r.allow_extension_dial, enabled: r.enabled,
+    }));
+  }
+
+  async getIvr(id) {
+    const i = (await this.listIvrs()).find((x) => x.id === id);
+    if (!i) throw notFound('Menu not found');
+    return i;
+  }
+
+  async assertIvrContent({ prompt_id: promptId, options, fail_dest: failDest }, selfNumber = null) {
+    await this.assertPromptExists(promptId);
+    for (const o of options || []) {
+      if (selfNumber && o.dest.type === 'ivr' && o.dest.value === selfNumber) continue; // returning to the same menu is allowed
+      await destinations.assertValid(this.db, o.dest);
+    }
+    if (failDest) {
+      if (selfNumber && failDest.type === 'ivr' && failDest.value === selfNumber) throw badRequest('A menu cannot fall back to itself', 'bad_destination');
+      await destinations.assertValid(this.db, failDest);
+    }
+  }
+
+  async createIvr(data) {
+    await this.assertNumberFree(data.number);
+    await this.assertIvrContent(data, data.number);
+    const { rows } = await this.db.query(
+      `INSERT INTO ivrs (number, name, prompt_id, timeout_secs, max_repeats, options, fail_dest, allow_extension_dial, enabled)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [data.number, data.name, data.prompt_id, data.timeout_secs, data.max_repeats, JSON.stringify(data.options),
+        data.fail_dest ? JSON.stringify(data.fail_dest) : null, data.allow_extension_dial, data.enabled],
+    );
+    return this.getIvr(Number(rows[0].id));
+  }
+
+  async updateIvr(id, patch) {
+    const current = await this.getIvr(id);
+    await this.assertIvrContent({ prompt_id: patch.prompt_id, options: patch.options, fail_dest: patch.fail_dest }, current.number);
+    const sets = [];
+    const params = [];
+    for (const [key, value] of Object.entries(patch)) {
+      params.push(['options', 'fail_dest'].includes(key) && value !== null ? JSON.stringify(value) : value);
+      sets.push(`${key} = $${params.length}`);
+    }
+    params.push(id);
+    await this.db.query(`UPDATE ivrs SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+    return this.getIvr(id);
+  }
+
+  async deleteIvr(id) {
+    const i = await this.getIvr(id);
+    const usedIn = await destinations.references(this.db, 'ivr', i.number, { exclude: `ivr:${i.number}` });
+    if (usedIn.length) throw conflict(`Menu ${i.number} is still used by: ${usedIn.join(', ')}`, 'in_use');
+    await this.db.query('DELETE FROM ivrs WHERE id = $1', [id]);
+    return i;
+  }
+
   // ---------------------------------------------------------------- bootstrap
   /**
    * The two seeded extensions get their credentials from the environment on the first start so an existing
@@ -630,7 +829,9 @@ class PbxStore {
     const outbound = await this.listOutbound();
     const ringGroups = await this.listRingGroups();
     const timeConditions = await this.listTimeConditions();
-    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound, ringGroups, timeConditions };
+    const announcements = await this.listAnnouncements();
+    const ivrs = await this.listIvrs();
+    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound, ringGroups, timeConditions, announcements, ivrs };
   }
 }
 

@@ -272,6 +272,56 @@ const patchTimeCondition = z
   .strictObject(Object.fromEntries(Object.entries(timeConditionFields).map(([k, v]) => [k, v.optional()])))
   .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
 
+const promptName = z.string().trim().min(1).max(60).regex(/^[\p{L}\p{N} .,'&()_-]+$/u, "Name may use letters, digits, spaces and . , ' & ( ) _ -");
+const uploadPrompt = z.strictObject({ name: promptName });
+const renamePrompt = z.strictObject({ name: promptName });
+
+const announcementFields = {
+  name: z.string().trim().min(1).max(60).regex(/^[\p{L}\p{N} .,'&()_-]+$/u, "Name may use letters, digits, spaces and . , ' & ( ) _ -"),
+  prompt_id: z.coerce.number().int().positive(),
+  next_dest: destination,
+  enabled: bool,
+};
+const createAnnouncement = z.strictObject({
+  name: announcementFields.name,
+  prompt_id: announcementFields.prompt_id,
+  next_dest: announcementFields.next_dest.optional().default(null),
+  enabled: announcementFields.enabled.optional().default(true),
+});
+const patchAnnouncement = z
+  .strictObject(Object.fromEntries(Object.entries(announcementFields).map(([k, v]) => [k, v.optional()])))
+  .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
+
+const ivrOption = z.strictObject({
+  digit: z.string().regex(/^[0-9*#]$/, 'A menu key is one of 0-9, * or #'),
+  dest: destinationSchema,
+});
+const uniqueDigits = (opts) => new Set(opts.map((o) => o.digit)).size === opts.length;
+const ivrFields = {
+  name: z.string().trim().regex(NAME_RE, "Name may use letters, digits, spaces and . , ' & ( ) _ - (max 40)"),
+  prompt_id: z.coerce.number().int().positive().nullable(),
+  timeout_secs: z.coerce.number().int().min(3).max(30),
+  max_repeats: z.coerce.number().int().min(1).max(5),
+  options: z.array(ivrOption).max(12).refine(uniqueDigits, 'Each key can be used once'),
+  fail_dest: destination,
+  allow_extension_dial: bool,
+  enabled: bool,
+};
+const createIvr = z.strictObject({
+  number: extNumber,
+  name: ivrFields.name,
+  prompt_id: ivrFields.prompt_id.optional().default(null),
+  timeout_secs: ivrFields.timeout_secs.optional().default(6),
+  max_repeats: ivrFields.max_repeats.optional().default(2),
+  options: ivrFields.options.optional().default([]),
+  fail_dest: ivrFields.fail_dest.optional().default(null),
+  allow_extension_dial: ivrFields.allow_extension_dial.optional().default(false),
+  enabled: ivrFields.enabled.optional().default(true),
+});
+const patchIvr = z
+  .strictObject(Object.fromEntries(Object.entries(ivrFields).map(([k, v]) => [k, v.optional()])))
+  .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
+
 const idParam = z.strictObject({ id: z.coerce.number().int().positive() });
 
 const cdrQuery = z.strictObject({
@@ -300,6 +350,7 @@ module.exports = {
     createExtension, patchExtension, createPagingGroup, patchPagingGroup,
     createTrunk, patchTrunk, createInbound, patchInbound, createOutbound, patchOutbound,
     createRingGroup, patchRingGroup, createTimeCondition, patchTimeCondition,
+    uploadPrompt, renamePrompt, createAnnouncement, patchAnnouncement, createIvr, patchIvr,
     idParam, cdrQuery, cdrStatsQuery,
   },
   trunkRules,

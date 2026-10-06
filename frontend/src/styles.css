@@ -186,3 +186,9 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .85em; }
 .rule-times { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .rule-times input[type=time], .rule-times input[type=number] { width: auto; }
 .rule-times select { width: auto; }
+
+/* menus and audio */
+.player { height: 2rem; max-width: 16rem; }
+.ivr-row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.ivr-row select { width: auto; }
+.keypad { display: grid; grid-template-columns: repeat(3, 3.2rem); gap: .3rem; margin: .5rem 0; }

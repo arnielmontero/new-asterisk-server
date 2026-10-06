@@ -49,6 +49,8 @@ services:
       - asterisk_data:/var/lib/asterisk
       # Extensions and trunks rendered by the backend from the database (Asterisk only reads them).
       - pbx_generated:/pbx-generated
+      # Audio prompts (written by the backend, played by Asterisk); voicemail and recordings (written by Asterisk).
+      - pbx_media:/pbx-media
       - asterisk_logs:/var/log/asterisk
     tmpfs:
       - /run/asterisk:mode=0755
@@ -86,9 +88,11 @@ services:
       EXT_1001_PHONE_PASSWORD: ${EXT_1001_PHONE_PASSWORD:-}
       EXT_1002_PHONE_PASSWORD: ${EXT_1002_PHONE_PASSWORD:-}
       PBX_GENERATED_DIR: /pbx-generated
+      PBX_MEDIA_DIR: /pbx-media
       CDR_RETENTION_DAYS: ${CDR_RETENTION_DAYS:-0}
     volumes:
       - pbx_generated:/pbx-generated
+      - pbx_media:/pbx-media
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -142,3 +146,4 @@ volumes:
   asterisk_data:
   asterisk_logs:
   pbx_generated:
+  pbx_media:

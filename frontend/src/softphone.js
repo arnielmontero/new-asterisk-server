@@ -142,6 +142,13 @@ export class Softphone {
   }
 
   // ------------------------------------------------------------------- calls
+  /** Send a DTMF key on the active call (answering menus, conference PINs). Returns false when there is no call. */
+  sendDtmf(tone) {
+    const sdh = this.session?.sessionDescriptionHandler;
+    if (!sdh || typeof sdh.sendDtmf !== 'function' || !/^[0-9*#A-D]$/.test(String(tone))) return false;
+    return !!sdh.sendDtmf(String(tone));
+  }
+
   /** Place a normal call (or, with `paging`, the SIP leg of an authorised page). */
   async call(number, { paging = null } = {}) {
     if (this.session) throw new Error('You are already in a call');

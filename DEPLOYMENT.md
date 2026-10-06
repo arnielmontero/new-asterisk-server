@@ -156,6 +156,10 @@ Never forward any of these ports from your router to the Internet.
 the three paging groups, the backend gives them their `.env` credentials, and Asterisk loads the generated files. The
 Asterisk container needs the new `pbx_generated` volume (declared in `docker-compose.yml`): `docker compose up -d --build`.
 
+### Audio prompts and storage
+
+Prompts are stored in the `pbx_media` Docker volume (mounted at `/pbx-media` in both the backend, which writes them, and Asterisk, which plays them). The same volume will hold voicemail and call recordings. Back it up with the rest of the stack (`docker run --rm -v communications-stack_pbx_media:/m ...`) or re-upload the prompts: they are small. The upload endpoint accepts up to 12 MB (Nginx allows a 13 MB body on that one URL only; every other API URL stays at 16 KB).
+
 ## 7a. Trunks, phone numbers and routes
 
 Outside calls need a **trunk**: where this system sends calls to and receives them from. Add one under **Trunks**:

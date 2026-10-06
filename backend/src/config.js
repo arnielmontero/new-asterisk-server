@@ -39,6 +39,7 @@ const envSchema = z.object({
   EXT_1001_PHONE_PASSWORD: optionalText,
   EXT_1002_PHONE_PASSWORD: optionalText,
   PBX_GENERATED_DIR: z.string().default('/pbx-generated'),
+  PBX_MEDIA_DIR: z.string().default('/pbx-media'),
   CDR_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
 });
 
@@ -78,6 +79,7 @@ function loadConfig(env = process.env) {
       1002: { secret: e.EXT_1002_PASSWORD, phone_secret: e.EXT_1002_PHONE_PASSWORD },
     },
     pbxGeneratedDir: e.PBX_GENERATED_DIR,
+    pbxMediaDir: e.PBX_MEDIA_DIR,
     cdrRetentionDays: e.CDR_RETENTION_DAYS,
   };
 }
