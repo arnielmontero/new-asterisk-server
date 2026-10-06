@@ -5,7 +5,7 @@ Update this file as work lands. Status is only moved to `PASS` after the behavio
 
 **Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done and verified · `MANUAL REQUIRED` needs hardware/human · `BLOCKED` cannot proceed (reason noted)
 
-**Last updated:** 2026-10-05 (Phase 2 verified incl. 15x15 browser E2E; Phase 3 in progress: stack test, backup/restore, docs done)
+**Last updated:** 2026-10-05 (all three phases complete; the only open items are the MANUAL REQUIRED hardware / real-LAN tests)
 
 ---
 
@@ -13,10 +13,10 @@ Update this file as work lands. Status is only moved to `PASS` after the behavio
 
 | Phase | Scope | Spec priority steps (§78) | Done | Status |
 |-------|-------|---------------------------|------|--------|
-| 1 | Foundation & Telephony Core | 1–4 | 26 / 27 (+1 partial) | Verified; only the negative health-check case is not exercised |
-| 2 | Application: Backend, Frontend, Calls & Paging | 5–11 | 36 / 38 (+2 partial) | Verified: 143 backend + 6 frontend tests, 15x15 browser E2E; admin pages and some error banners not browser-tested |
-| 3 | Hardening, Validation & Delivery | 12–17 | 15 / 24 (+2 partial) | In progress: stack test, backup/restore, docs done; physical phone, real-LAN firewall, secrets scan, final report open |
-| | **Total** | | **77 / 89** | |
+| 1 | Foundation & Telephony Core | 1–4 | 27 / 27 | Verified |
+| 2 | Application: Backend, Frontend, Calls & Paging | 5–11 | 38 / 38 | Verified: 143 backend + 9 frontend unit tests, 18 browser E2E, 6 resilience |
+| 3 | Hardening, Validation & Delivery | 12–17 | 23 / 24 (+1 partial) | Done except firewall behaviour on a real LAN (MANUAL REQUIRED); physical phone, other browsers/OS and listening check are MANUAL REQUIRED |
+| | **Total** | | **88 / 89** (+1 partial) | Acceptance: 29 PASS, 1 MANUAL REQUIRED (test 30); see COMPLETION_REPORT.md |
 
 Phase gate rule (§78): do not start the next phase while the previous phase's exit criteria are failing.
 
@@ -38,7 +38,7 @@ Goal: a running, pinned Asterisk 22 LTS container that accepts SIP (UDP) and Web
 - [x] Debian 12.12-slim pinned by digest; Opus codec binary pinned by version + SHA256. Debian apt packages are not version-pinned (no snapshot repo) — known limitation
 - [x] Builds with PJSIP, res_http_websocket, SRTP/DTLS, Opus (transcoding), Page(), Echo(), Dial(), ConfBridge
 - [x] Runs the daemon as uid 10001 (entrypoint starts as root only to render config, then `setpriv` drops privileges); host networking; mounts per §7 (config `:ro`, keys, data volume, logs volume)
-- [~] Healthcheck (uptime + PJSIP UDP transport + HTTP server + AMI) reports healthy; negative case (detecting a broken Asterisk) not yet exercised
+- [x] Healthcheck (uptime + PJSIP UDP transport + HTTP server + AMI) reports healthy; negative case verified: freezing the Asterisk daemon (SIGSTOP) turned the container `unhealthy` after ~68 s and it recovered to `healthy` within 15 s of resuming
 - [x] Runtime check: all required modules `Running` (chan_pjsip, res_pjsip*, res_http_websocket, res_pjsip_transport_websocket, res_srtp, res_rtp_asterisk, app_page, app_confbridge, app_echo, app_dial, codec_opus/ulaw/alaw)
 
 ### 1.3 Base Asterisk config (§9–§12, §25–§26)
@@ -99,8 +99,8 @@ Goal: authenticated dashboard with real-time extension state, softphone, normal 
 - [x] Dashboard: 1001/1002 live state, call/hang-up, paging buttons (role-aware); read-only role verified in a real browser
 - [x] Softphone: register (WSS), call, incoming answer/reject/hang-up, mute, call state, echo test — verified in Chromium
 - [x] SIP registration state shown separately from dashboard login (header chip + softphone panel)
-- [~] User management, audit log and system status pages are built; only exercised through the API so far (no browser test for these three pages yet)
-- [~] Error handling per §67: login failure, call failure/reject, paging failure, unauthorised direct page, AMI-down banner are implemented/tested; mic-denied, audio-blocked and backend-restart banners are implemented but not yet exercised in a browser
+- [x] User management, audit log and system status pages exercised in a real browser (create / weak password refused / duplicate refused / edit role + disable / disabled account cannot log in / delete / last admin protected / audit filters + pager / system cards)
+- [x] Error handling per §67 exercised in real browsers: login failure, call rejected, paging failure, unauthorised direct page, microphone denied/missing/busy/refused, audio-blocked banner + recovery, backend-unreachable banner (real backend stop), AMI-disconnected banner and Unknown state (real Asterisk stop), automatic recovery of both
 - [x] Nginx: HTTPS (TLS 1.2/1.3), HTTP→HTTPS 301, `/api`, `/socket.io`, `/ws` proxy, security headers (CSP, nosniff, frame, referrer, permissions-policy), `ASTERISK_HOST` templating, lazy backend resolution
 
 ### 2.4 Normal calling (§30)
@@ -130,15 +130,15 @@ Goal: authenticated dashboard with real-time extension state, softphone, normal 
 Goal: secure, backed-up, tested, documented, and honestly verified end to end.
 
 ### 3.1 Physical phone compatibility (§42, §66)
-- [ ] Physical SIP phone profile + docs
-- [ ] Hardware tests run, or recorded as `MANUAL REQUIRED` / `DEVICE LIMITATION`
+- [x] Physical SIP phone profile + docs (DEPLOYMENT.md section 9, TESTING.md M1)
+- [x] Hardware tests recorded as `MANUAL REQUIRED` with exact steps (acceptance test 30; TESTING.md M1-M4). They have NOT been run: no phone is available
 
 ### 3.2 TLS / PKI / security hardening (§15, §16, §43, §45–§48)
-- [ ] Generated certs verified: SANs, permissions, repeat-safe, never committed
+- [x] Generated certs verified: Nginx cert chains to the LAN CA (`openssl verify` OK) with SANs DNS:communications.local + the server IP, CA has `CA:TRUE, pathlen:0`, the Asterisk DTLS certificate is a separate self-signed pair, re-running the script leaves everything unchanged (hashes identical), keys/certs are git-ignored and absent from history. Mode 600 cannot be verified on this NTFS host (checked inside the container: asterisk:600)
 - [x] CSP / security headers don't break mic/WebRTC
-- [~] Firewall rules documented (LAN-only; AMI, 8088, Postgres not exposed) — documented in DEPLOYMENT.md; NOT verified on a real Linux host (MANUAL REQUIRED, TESTING.md M3)
-- [ ] CORS same-origin; no wildcard
-- [ ] Secrets scan: nothing sensitive in logs or git
+- [~] Firewall rules documented (LAN-only; AMI, 8088, Postgres not exposed) — documented in DEPLOYMENT.md; the nftables ruleset and DOCKER-USER rules were loaded successfully in a throwaway network namespace (syntax and kernel acceptance), but their effect on a real LAN is NOT verified (MANUAL REQUIRED, TESTING.md M3)
+- [x] CORS same-origin; no wildcard — no `Access-Control-*` header is ever sent; a cross-origin POST is refused with 403 `bad_origin`; a preflight from a foreign origin gets no CORS grant
+- [x] Secrets scan: every secret value in .env was searched for in the tracked files, the full git history and all container logs (none found); no bearer tokens, cookies or test passwords in logs; no private key in history; `.env`, `certs/`, `asterisk/keys/*`, `backups/` are git-ignored
 
 ### 3.3 Backup & restore (§51–§52)
 - [x] `scripts/backup.sh` (timestamped, secure perms, integrity check)
@@ -155,17 +155,17 @@ Goal: secure, backed-up, tested, documented, and honestly verified end to end.
 - [x] Audio verified where possible (RTP packet/audio inspection); else `MANUAL REQUIRED` with exact steps
 - [x] One-way paging verified behaviorally (§64)
 - [x] Normal calls confirmed not auto-answering
-- [~] Logs reviewed; errors fixed; failed tests repeated — logs reviewed for secrets (none) and errors; the browser E2E failure was root-caused and the suite repeated 15x; a final pass over every service log is still to do
+- [x] Logs reviewed; errors fixed; failed tests repeated — all four services reviewed; every remaining warning/error is caused by a test that deliberately triggers it (duplicate keys, append-only checks, outages). Fixed from the review: forced backend exit on shutdown while browsers are connected, Asterisk music-on-hold warning
 
 ### 3.6 Documentation (§71–§72)
 - [x] `README.md` (architecture, requirements, install, JWT handling, pinned versions)
 - [x] `DEPLOYMENT.md` (certs, DNS/hosts, firewall, browser + phone setup, backup/restore)
 - [x] `TESTING.md` (procedures, MANUAL REQUIRED steps)
 - [x] Troubleshooting + known browser/phone limitations
-- [ ] Final completion report (§77)
+- [x] Final completion report (§77): [COMPLETION_REPORT.md](COMPLETION_REPORT.md)
 
 ### Phase 3 exit criteria
-- [ ] All 30 acceptance tests below are `PASS` or `MANUAL REQUIRED` — none unverified, none silently skipped
+- [x] All 30 acceptance tests below are `PASS` or `MANUAL REQUIRED` — none unverified, none silently skipped
 
 ---
 
@@ -179,12 +179,12 @@ Status values: `NOT RUN` · `PASS` · `FAIL` · `MANUAL REQUIRED`. Evidence colu
 | 2 | All required containers start | 1 | PASS | `docker compose up -d`: asterisk, backend, database, frontend all running |
 | 3 | All applicable healthchecks pass | 1–2 | PASS | all four containers report `healthy` (asterisk: uptime+PJSIP+HTTP+AMI; backend: `/health`; database: `pg_isready`; frontend: HTTPS) |
 | 4 | HTTPS works | 2 | PASS | Chromium loads `https://communications.local` (TLS 1.2/1.3, LAN-CA-issued cert); HTTP→HTTPS 301 verified |
-| 5 | Browser trusts generated LAN CA after install | 3 | PASS | Chromium/Linux with the CA in its NSS store loads the site; the same browser without the CA refuses it (`ERR_CERT_AUTHORITY_INVALID`). Windows/macOS/Firefox/mobile install steps: MANUAL REQUIRED (to be documented) |
+| 5 | Browser trusts generated LAN CA after install | 3 | PASS (Chromium/Linux); other OS/browsers MANUAL REQUIRED | Chromium/Linux with the CA in its NSS store loads the site; the same browser without the CA refuses it (`ERR_CERT_AUTHORITY_INVALID`). Windows/macOS/Firefox/mobile install steps: MANUAL REQUIRED (to be documented) |
 | 6 | `/health` reports healthy DB and AMI | 2 | PASS | `GET /api/health` via Nginx → `{"status":"ok","checks":{"database":"ok","ami":"connected"}}`; 503 `degraded`/`down` paths unit-tested (live AMI-down check goes into `test-stack.sh`) |
 | 7 | Administrator login works | 2 | PASS | unit + live (`curl` over HTTPS); JWT issued, HttpOnly cookie set |
 | 8 | Invalid login fails | 2 | PASS | identical 401 for wrong password and unknown user; browser shows the error; rate limit 429 after repeated failures |
 | 9 | RBAC works | 2 | PASS | 36-case endpoint × role matrix (unauthenticated/user/operator/admin); read-only user verified in a real browser (UI hidden, API 403) |
-| 10 | User management works | 2 | PASS | API level: create/update/deactivate/delete, validation, duplicates, last-admin protection (unit + E2E). The admin web forms themselves are not yet browser-tested |
+| 10 | User management works | 2 | PASS | API level (unit) and in a real browser: create, weak/duplicate refused, edit role + disable (disabled account cannot log in), delete, last administrator protected |
 | 11 | 1001 WebRTC registration | 2 | PASS | real Chromium registers over wss://…/ws (Nginx → Asterisk), REGISTER answered 200 OK; dashboard shows Online |
 | 12 | 1002 WebRTC registration | 2 | PASS | as above for 1002 |
 | 13 | 1001 → 1002 rings, two-way audio | 2 | PASS | INVITE has no paging markers; not auto-answered after 3.5 s; after manual answer 1001 hears only 880 Hz (1002's tone) and 1002 only 440 Hz. See the RTP-port finding in Decisions & open items. |
@@ -204,7 +204,7 @@ Status values: `NOT RUN` · `PASS` · `FAIL` · `MANUAL REQUIRED`. Evidence colu
 | 27 | PostgreSQL data persists after restart | 3 | PASS | `test-stack.sh`: user count identical before/after `docker compose restart database`, admin can still log in, backend `/health` recovers; named volume `pgdata` |
 | 28 | Backup completes successfully | 3 | PASS | `scripts/test-backup-restore.sh` (16/16, run repeatedly): archive with DB dump, Asterisk config + data, certs/keys, manifest + SHA256SUMS; integrity re-verified after writing; no `.env` unless `--include-env`. Archive mode 600 is not verifiable on this NTFS host (reported as NOTE, not as pass) |
 | 29 | Restore completes in test environment | 3 | PASS | same script: marker user created before the backup is back, user created after it is gone, audit log restored, admin login + `/health` + paging dialplan OK afterwards; safety backup taken first; a tampered archive is rejected before anything changes (live data untouched) |
-| 30 | Physical SIP phone tests | 3 | NOT RUN | |
+| 30 | Physical SIP phone tests | 3 | MANUAL REQUIRED | No physical SIP phone is available in this environment. The phone endpoints (`1001-phone`/`1002-phone`) were verified with a software SIP client over UDP (registration, echo test audio). Steps for the real phone, including the paging-INVITE capture and the DEVICE LIMITATION decision, are in TESTING.md M1 |
 
 Tests 11–22 involve browser microphone/speaker and live audio; anything that cannot be driven or measured automatically stays `MANUAL REQUIRED` with exact steps in `TESTING.md`.
 
@@ -227,3 +227,7 @@ Tests 11–22 involve browser microphone/speaker and live audio; anything that c
 | 2026-10-05 | Stuck calls after a browser dies | `rtp_timeout=30` hangs up a call with no media for 30 s; a page is capped at 5 minutes (`TIMEOUT(absolute)`). The audit writer retries with a null user when the user was deleted mid-page (FK violation). |
 | 2026-10-05 | Paging identity | `CALLERID()` had no effect on the outbound PJSIP From header; the paging identity (700/701/702) is set with `CONNECTEDLINE(num/name)` in `sub-page-prep`. |
 | 2026-10-05 | Windows host notes | Git Bash needs `MSYS_NO_PATHCONV=1`; the Windows curl returns exit 23 for `-o /dev/null` (scripts avoid it under `set -e`); a `tar` piped into `grep -q` under `pipefail` can die of SIGPIPE (fixed in restore.sh); file modes cannot be enforced on NTFS (backup/restore report this instead of claiming it). The test scripts need no Python. |
+| 2026-10-05 | Fresh-clone deployment test found two packaging defects | Cloning the repository elsewhere, generating a new `.env` + certificates and building (`COMPOSE_PROJECT_NAME=fresh`) failed at first: (1) `backend/migrations/001_init.sql` was never committed — the `*.sql` ignore rule swallowed it, so nobody else could build the backend; (2) `test-backend.sh` assumed `node_modules` already existed. Both fixed. After the fixes the fresh copy (empty volumes, new secrets, new CA) built, became healthy and passed: stack 62/62, backend 143/143, frontend unit 9/9, browser 18/18, backup/restore 16/16, resilience 6/6. The copy and its volumes were then removed. Docker layers were reused from the build cache (inputs identical), so this proves reproducibility of the build from the repository contents, not a cold recompile of Asterisk. |
+| 2026-10-05 | Backend outage was not detected by the SPA | With the backend stopped, Nginx answers 502 — a successful HTTP exchange — so the SPA kept believing the backend was fine and showed only a small "Reconnecting…" chip. Fixed: a gateway error without the backend's own JSON error body counts as "unreachable", and a dropped live socket triggers a probe. Verified with a real backend stop in real browsers (scripts/test-resilience.sh). |
+| 2026-10-05 | Backend shutdown hung while browsers were connected | `server.close()` only resolves when every connection has ended, but the Socket.IO connections were closed after it, so shutdown always waited for the 10 s forced exit. Fixed (sockets closed first); shutdown now completes in milliseconds and the resilience test asserts it. |
+| 2026-10-05 | Microphone refusal wording | Chromium can refuse with `NotSupportedError` (not only `NotAllowedError`); the UI used to show "Could not enable audio: Not supported". Every `getUserMedia` failure now has specific guidance (unit-tested and verified in a browser). |

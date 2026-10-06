@@ -9,9 +9,10 @@ marked PASS after it was actually run and observed. Anything that needs hardware
 | Layer | Command | What it covers |
 |---|---|---|
 | Backend (143 tests) | `./scripts/test-backend.sh` | Authentication (valid/invalid, expired, tampered, wrong audience, `alg=none`, rate limit, session cap), RBAC matrix (anonymous / user / operator / admin), user management (create, update, deactivate, delete, validation, duplicates, last-admin protection incl. concurrent demotion), call origination and hangup (strict validation, offline/busy/AMI-down, audit), paging (valid/invalid group, authorisation grant written to Asterisk, concurrency, lifecycle from events, timeout, force-end), database (migrations fresh/re-run/concurrent/tamper/rollback, persistence, constraints, append-only audit), health, the AMI client against a mock AMI server (login, correlation, event lists, drop/outage/half-open reconnect with backoff, clean stop), extension-state derivation, Socket.IO (authentication, events, role filtering). Runs inside a Node container against the stack's real PostgreSQL (each file uses a throw-away database) |
-| Frontend unit (6 tests) | `cd frontend && npm test` | the paging auto-answer gate (every required condition is individually necessary; a generic `Call-Info` is never enough) |
-| Browser end-to-end (15 tests) | `./scripts/test-e2e.sh` | two real Chromium instances act as extensions 1001 and 1002 against the live stack, over HTTPS/WSS through Nginx to Asterisk; see below |
+| Frontend unit (9 tests) | `cd frontend && npm test` | the paging auto-answer gate (every required condition is individually necessary; a generic `Call-Info` is never enough) and the microphone error wording |
+| Browser end-to-end (18 tests) | `./scripts/test-e2e.sh` | two real Chromium instances act as extensions 1001 and 1002 against the live stack, over HTTPS/WSS through Nginx to Asterisk; see below |
 | Stack runtime | `./scripts/test-stack.sh` (`--quick` skips restarts) | compose validity, service status and health, HTTPS, backend `/health`, PostgreSQL readiness, AMI connectivity, authentication, RBAC, audit records, Asterisk version, `pjsip show endpoints`, `dialplan show 700@default`, required modules, WebSocket configuration and the `wss://…/ws` upgrade, security headers; then **restarts Asterisk and measures that the backend reconnects AMI within 10 s**, and restarts PostgreSQL to prove persistence. Exits non-zero if any check fails |
+| Outages seen by real browsers | `./scripts/test-resilience.sh` | stops the backend, then Asterisk, while two real browsers (an administrator and an operator) watch: "Cannot reach the server" banner and a refused page when the backend is down, the banner clearing by itself afterwards, "telephony disconnected" banner for the administrator and state **Unknown** (not guessed) when Asterisk is down, paging switched off with a reason, and the browser softphone re-registering on its own when Asterisk returns. Also asserts that the backend shuts down gracefully while browsers are connected. Interrupts the stack for about a minute each time: run it on a development or test stack |
 | Backup and restore | `./scripts/test-backup-restore.sh` (drives `backup.sh` and `restore.sh`) | creates a marker user, backs up, creates a second marker, restores, and checks the first is back and the second is gone; also checks that a tampered archive is rejected before anything is changed, the safety backup exists, and login, `/health` and the paging dialplan work afterwards. Restarts frontend, backend and Asterisk: run it on a development or test stack |
 
 ## What the browser tests prove (and how)
@@ -34,6 +35,8 @@ not about signalling:
 - Dashboards show Offline → Online → In-Call → Paging → Online in real time.
 - Click-to-call (`/api/originate`) rings, connects with audio both ways, and `/api/hangup` ends it.
 - The session cookie is invisible to JavaScript and nothing is stored in `localStorage`/`sessionStorage`.
+
+The suite also drives the administrator pages (create / edit / disable / delete a user, the protected last administrator, audit filters, system status), microphone problems (denied, missing, busy, refused: a clear message each time and the button usable again) and the "browser blocked audio playback" banner with its recovery.
 
 The harness waits for a quiet system before starting (stale calls from a crashed browser are cleaned up by Asterisk's
 30 s media timeout) and creates and removes its own `e2e.*` users. Do not run two instances at once.
@@ -81,6 +84,10 @@ client shows them filtered/closed). Confirm 443, 80, 5060/udp and the RTP range 
 Place a call and a page with real headsets/speakers and judge audibility, echo and delay. Automated tests verify that the
 correct audio arrives, not that it sounds good.
 
+## Testing a second copy of the stack
+
+Every script honours `COMPOSE_PROJECT_NAME` (default `communications-stack`). To prove that a fresh clone deploys, clone the repository elsewhere, run `scripts/init-env.sh` and `scripts/generate-certs.sh`, stop the stack you are using (the host ports are shared), then run `COMPOSE_PROJECT_NAME=fresh docker compose up -d --build` and the test scripts with the same variable set. This was done for the delivered version and it exposed two packaging defects that were then fixed (see TRACKER.md).
+
 ## Running everything
 
 ```bash
@@ -89,6 +96,8 @@ docker compose up -d --build
 (cd frontend && npm ci && npm test)
 ./scripts/test-e2e.sh
 ./scripts/test-stack.sh
+./scripts/test-backup-restore.sh   # development/test stack only
+./scripts/test-resilience.sh       # development/test stack only
 ```
 
 ## Test-environment notes

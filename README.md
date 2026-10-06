@@ -188,7 +188,7 @@ asterisk/                 Dockerfile, entrypoint (renders config templates with 
 backend/                  Express app (src/), migrations/, tests/
 frontend/                 SPA (src/), Nginx template, build script, unit tests
 tests/e2e/                real-browser (Chromium) end-to-end tests
-scripts/                  init-env, generate-certs, backup, restore, test-backend, test-e2e, test-stack, test-backup-restore
+scripts/                  init-env, generate-certs, backup, restore, test-backend, test-e2e, test-stack, test-backup-restore, test-resilience
 ```
 
 ## Quick start
