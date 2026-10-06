@@ -37,3 +37,9 @@ Thumbs.db
 
 # ...but the schema migrations are source code
 !backend/migrations/*.sql
+
+# SIP Phone (Windows dialer): build output and test artifacts. The exe is rebuilt by "SIP Phone/build.ps1".
+SIP Phone/dist/
+SIP Phone/artifacts/
+SIP Phone/**/bin/
+SIP Phone/**/obj/

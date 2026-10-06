@@ -189,7 +189,14 @@ backend/                  Express app (src/), migrations/, tests/
 frontend/                 SPA (src/), Nginx template, build script, unit tests
 tests/e2e/                real-browser (Chromium) end-to-end tests
 scripts/                  init-env, generate-certs, backup, restore, test-backend, test-e2e, test-stack, test-backup-restore, test-resilience
+SIP Phone/                Windows SIP phone (dialer): source, build script, tests; see SIP Phone/README.md
 ```
+
+### Windows SIP phone
+
+`SIP Phone/` contains a small Windows softphone that registers like a physical IP phone (DEPLOYMENT.md section 9) and can place
+calls, take calls and auto-answer pages. Build the single-file `SIP Phone/dist/SIP Phone.exe` with `SIP Phone/build.ps1`
+(needs the .NET 8 SDK; the exe itself needs nothing). Setup, use and limits are in [SIP Phone/README.md](SIP%20Phone/README.md).
 
 ## Quick start
 

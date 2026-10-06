@@ -178,6 +178,10 @@ Dialling 1001/1002 rings the browser and the phone together. **Paging to phones:
 (`pjsip set logger on`). A phone that does not support it will simply ring (normal calling is unaffected); record that as
 a device limitation. Physical-phone behaviour has not been tested in this repository: see [TESTING.md](TESTING.md).
 
+A PC can use the same profile with the Windows program in [SIP Phone/](SIP%20Phone/README.md): it registers as `1001-phone` /
+`1002-phone` over UDP exactly as above, answers the PBX's OPTIONS keep-alive and auto-answers pages (Call-Info `answer-after=0`
+plus `X-Paging-Call: true` from 700-702). Like every phone it must be inside `LAN_SUBNET`.
+
 ## 10. Paging operation
 
 Operators with an extension see **Page All / Page Office / Page Warehouse**. Press a button, speak, press **End page**.

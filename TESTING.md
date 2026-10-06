@@ -13,6 +13,7 @@ marked PASS after it was actually run and observed. Anything that needs hardware
 | Browser end-to-end (18 tests) | `./scripts/test-e2e.sh` | two real Chromium instances act as extensions 1001 and 1002 against the live stack, over HTTPS/WSS through Nginx to Asterisk; see below |
 | Stack runtime | `./scripts/test-stack.sh` (`--quick` skips restarts) | compose validity, service status and health, HTTPS, backend `/health`, PostgreSQL readiness, AMI connectivity, authentication, RBAC, audit records, Asterisk version, `pjsip show endpoints`, `dialplan show 700@default`, required modules, WebSocket configuration and the `wss://…/ws` upgrade, security headers; then **restarts Asterisk and measures that the backend reconnects AMI within 10 s**, and restarts PostgreSQL to prove persistence. Exits non-zero if any check fails |
 | Outages seen by real browsers | `./scripts/test-resilience.sh` | stops the backend, then Asterisk, while two real browsers (an administrator and an operator) watch: "Cannot reach the server" banner and a refused page when the backend is down, the banner clearing by itself afterwards, "telephony disconnected" banner for the administrator and state **Unknown** (not guessed) when Asterisk is down, paging switched off with a reason, and the browser softphone re-registering on its own when Asterisk returns. Also asserts that the backend shuts down gracefully while browsers are connected. Interrupts the stack for about a minute each time: run it on a development or test stack |
+| Windows SIP phone (70 unit + 48 end-to-end) | `cd "SIP Phone/src/SipPhone.Tests" && dotnet test`; `"SIP Phone/test-sipphone.sh"` | the phone engine as `1001-phone` and `1002-phone` against the real Asterisk and, for paging, the real backend: bad password, unreachable server, OPTIONS keep-alive, echo audio, two-way audio by tone analysis, no auto-answer on normal calls, mute/hold/DTMF, decline, cancel, invalid number, direct paging refused, real page auto-answered one-way, single-use and group-specific grant. Uses tones instead of a sound card; details in `SIP Phone/README.md` |
 | Backup and restore | `./scripts/test-backup-restore.sh` (drives `backup.sh` and `restore.sh`) | creates a marker user, backs up, creates a second marker, restores, and checks the first is back and the second is gone; also checks that a tampered archive is rejected before anything is changed, the safety backup exists, and login, `/health` and the paging dialplan work afterwards. Restarts frontend, backend and Asterisk: run it on a development or test stack |
 
 ## What the browser tests prove (and how)
@@ -78,6 +79,15 @@ different machines. Record any autoplay or permission differences.
 With two PCs (and ideally a phone) on the LAN: apply the firewall ruleset, then confirm calls and pages work between them
 and that ports 5038, 8088, 5432 and 3000 are **not** reachable from the LAN (`nmap -p 3000,5038,5432,8088 SERVER_IP` from a
 client shows them filtered/closed). Confirm 443, 80, 5060/udp and the RTP range are reachable only from the LAN.
+
+### M5. Windows SIP phone program on a real LAN PC
+
+The engine is verified against the PBX (see the table above) and the program was started and inspected on the development PC,
+but it could not be run against the PBX from there (Docker Desktop's host network is inside the VM) and no sound card path was
+exercised. On a PC in `LAN_SUBNET`, with a headset: build or copy `SIP Phone.exe`, enter the settings (`SIP Phone/README.md`),
+allow the Windows Firewall prompt on private networks, then confirm: registers (green), **Echo test (600)** returns your voice,
+a call from a browser rings and can be answered with sound both ways, mute/hold work, and a page from the dashboard is
+answered by itself and heard (and the microphone is not sent). Record the Windows version and headset.
 
 ### M4. Listening check
 
