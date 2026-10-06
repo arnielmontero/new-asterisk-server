@@ -198,7 +198,11 @@ marked done.
 - [x] Prompt library (WAV any rate/format -> 8 kHz mono, server side in pure JS; MP3/M4A/OGG and microphone recordings converted in the browser), preview, rename, delete-protection while in use; shared `pbx_media` volume; Nginx allows the large body on the upload URL only
 - [x] Announcements (play then continue/hang up) and IVR menus (keys 0-9 * #, timeout, repeats, fall-back, optional direct extension dialling, self-return allowed, loops cut by the hop counter); both are destinations everywhere; new softphone keypad (DTMF)
 - [x] **Verified:** 264 backend tests (WAV formats incl. 8/16/24/32-bit and float, hostile names, oversized uploads, orphan files, number-space sharing, reference protection, dialplan-only reload); 10 real-browser scenarios (`tests/e2e/ivr.test.js`) with measured prompt tones, DTMF routing and fall-back timing
-#### B3 — call queues with agents (not started)
+#### B3 — call queues with agents (done 2026-10-06)
+- [x] Queues: six strategies, agent ring/rest time, maximum wait and callers, fall-back destination, refuse-when-empty; `app_queue` enabled with generated `queues_generated.conf` (reloaded on its own, ahead of the dialplan); members are Local channels that ring the extension's browser and phone (DND skipped) and watch a combined device-state hint
+- [x] Live status (QueueStatus), agent pause/resume (QueuePause), statistics from real queue events (served, abandoned, turned away, wait, talk, service level, per agent); dashboard "My queues" panel
+- [x] **Verified:** 279 backend tests; 9 real-browser scenarios (`tests/e2e/queues.test.js`)
+- Defects found by testing: Asterisk reports a timed-out caller as an abandon before our dialplan reports the real reason (the reason now replaces it); `queue reload all` does not reorder existing members, and penalties do not escalate on a timeout, so an in-order queue whose agent order changes is reloaded without the queue first and then with it
 #### B4 — voicemail and call recording (not started)
 
 ### Phase C — Conferencing, parking, transfer, presence (not started)

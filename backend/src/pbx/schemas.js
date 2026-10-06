@@ -322,6 +322,38 @@ const patchIvr = z
   .strictObject(Object.fromEntries(Object.entries(ivrFields).map(([k, v]) => [k, v.optional()])))
   .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
 
+const QUEUE_STRATEGIES = ['ringall', 'leastrecent', 'fewestcalls', 'rrmemory', 'random', 'linear'];
+const queueFields = {
+  name: z.string().trim().regex(NAME_RE, "Name may use letters, digits, spaces and . , ' & ( ) _ - (max 40)"),
+  strategy: z.enum(QUEUE_STRATEGIES),
+  member_timeout: z.coerce.number().int().min(5).max(60),
+  wrapup_secs: z.coerce.number().int().min(0).max(120),
+  max_callers: z.coerce.number().int().min(0).max(500),
+  max_wait_secs: z.coerce.number().int().min(10).max(3600),
+  hold_when_empty: bool,
+  members: z.array(extNumber).min(1, 'Add at least one agent').max(100),
+  fail_dest: destination,
+  enabled: bool,
+};
+const createQueue = z.strictObject({
+  number: extNumber,
+  name: queueFields.name,
+  strategy: queueFields.strategy.optional().default('ringall'),
+  member_timeout: queueFields.member_timeout.optional().default(15),
+  wrapup_secs: queueFields.wrapup_secs.optional().default(5),
+  max_callers: queueFields.max_callers.optional().default(0),
+  max_wait_secs: queueFields.max_wait_secs.optional().default(120),
+  hold_when_empty: queueFields.hold_when_empty.optional().default(false),
+  members: queueFields.members,
+  fail_dest: queueFields.fail_dest.optional().default(null),
+  enabled: queueFields.enabled.optional().default(true),
+});
+const patchQueue = z
+  .strictObject(Object.fromEntries(Object.entries(queueFields).map(([k, v]) => [k, v.optional()])))
+  .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
+const queueStatsQuery = z.strictObject({ from: z.coerce.date().optional(), to: z.coerce.date().optional(), serviceLevel: z.coerce.number().int().min(1).max(600).optional().default(20) });
+const pauseBody = z.strictObject({ paused: z.boolean() });
+
 const idParam = z.strictObject({ id: z.coerce.number().int().positive() });
 
 const cdrQuery = z.strictObject({
@@ -351,6 +383,7 @@ module.exports = {
     createTrunk, patchTrunk, createInbound, patchInbound, createOutbound, patchOutbound,
     createRingGroup, patchRingGroup, createTimeCondition, patchTimeCondition,
     uploadPrompt, renamePrompt, createAnnouncement, patchAnnouncement, createIvr, patchIvr,
+    createQueue, patchQueue, queueStatsQuery, pauseBody,
     idParam, cdrQuery, cdrStatsQuery,
   },
   trunkRules,

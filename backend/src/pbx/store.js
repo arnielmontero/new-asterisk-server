@@ -56,7 +56,7 @@ class PbxStore {
   }
 
   /** A number may be an extension, a paging group, or reserved, never two of them. */
-  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null, exceptRingGroupId = null, exceptIvrId = null } = {}) {
+  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null, exceptRingGroupId = null, exceptIvrId = null, exceptQueueId = null } = {}) {
     if (RESERVED_NUMBERS.has(number)) throw conflict(`${number} is reserved (echo test)`, 'number_reserved');
     const e = (await this.db.query('SELECT id FROM extensions WHERE number = $1', [number])).rows[0];
     if (e && Number(e.id) !== exceptExtensionId) throw conflict(`${number} is already an extension`, 'number_in_use');
@@ -66,6 +66,8 @@ class PbxStore {
     if (rg && Number(rg.id) !== exceptRingGroupId) throw conflict(`${number} is already a ring group`, 'number_in_use');
     const iv = (await this.db.query('SELECT id FROM ivrs WHERE number = $1', [number])).rows[0];
     if (iv && Number(iv.id) !== exceptIvrId) throw conflict(`${number} is already a menu`, 'number_in_use');
+    const qu = (await this.db.query('SELECT id FROM queues WHERE number = $1', [number])).rows[0];
+    if (qu && Number(qu.id) !== exceptQueueId) throw conflict(`${number} is already a queue`, 'number_in_use');
   }
 
   // --------------------------------------------------------------- extensions
@@ -803,6 +805,90 @@ class PbxStore {
     return i;
   }
 
+  // --------------------------------------------------------------------- queues
+  async listQueues() {
+    const { rows } = await this.db.query(
+      `SELECT q.*, COALESCE(array_agg(e.number ORDER BY m.position) FILTER (WHERE e.id IS NOT NULL), '{}') AS members
+       FROM queues q
+       LEFT JOIN queue_members m ON m.queue_id = q.id
+       LEFT JOIN extensions e ON e.id = m.extension_id
+       GROUP BY q.id ORDER BY q.number`,
+    );
+    return rows.map((r) => ({
+      id: Number(r.id), number: r.number, name: r.name, strategy: r.strategy, member_timeout: r.member_timeout,
+      wrapup_secs: r.wrapup_secs, max_callers: r.max_callers, max_wait_secs: r.max_wait_secs, hold_when_empty: r.hold_when_empty,
+      fail_dest: r.fail_dest || null, enabled: r.enabled, members: r.members,
+    }));
+  }
+
+  async getQueue(id) {
+    const q = (await this.listQueues()).find((x) => x.id === id);
+    if (!q) throw notFound('Queue not found');
+    return q;
+  }
+
+  async setQueueMembers(client, queueId, members) {
+    await client.query('DELETE FROM queue_members WHERE queue_id = $1', [queueId]);
+    const unique = [...new Set(members)];
+    const found = (await client.query('SELECT id, number FROM extensions WHERE number = ANY($1::text[])', [unique])).rows;
+    if (found.length !== unique.length) {
+      const known = new Set(found.map((r) => r.number));
+      throw badRequest(`Unknown extension(s): ${unique.filter((n) => !known.has(n)).join(', ')}`, 'unknown_extension');
+    }
+    const byNumber = new Map(found.map((r) => [r.number, r.id]));
+    let pos = 0;
+    for (const number of unique) {
+      await client.query('INSERT INTO queue_members (queue_id, extension_id, position) VALUES ($1,$2,$3)', [queueId, byNumber.get(number), pos]);
+      pos += 1;
+    }
+  }
+
+  async createQueue(data) {
+    await this.assertNumberFree(data.number);
+    await destinations.assertValid(this.db, data.fail_dest);
+    const id = await this.db.tx(async (c) => {
+      const { rows } = await c.query(
+        `INSERT INTO queues (number, name, strategy, member_timeout, wrapup_secs, max_callers, max_wait_secs, hold_when_empty, fail_dest, enabled)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        [data.number, data.name, data.strategy, data.member_timeout, data.wrapup_secs, data.max_callers, data.max_wait_secs,
+          data.hold_when_empty, data.fail_dest ? JSON.stringify(data.fail_dest) : null, data.enabled],
+      );
+      await this.setQueueMembers(c, rows[0].id, data.members);
+      return Number(rows[0].id);
+    });
+    return this.getQueue(id);
+  }
+
+  async updateQueue(id, patch) {
+    const current = await this.getQueue(id);
+    if (patch.fail_dest) {
+      if (patch.fail_dest.type === 'queue' && patch.fail_dest.value === current.number) throw badRequest('A queue cannot fall back to itself', 'bad_destination');
+      await destinations.assertValid(this.db, patch.fail_dest);
+    }
+    await this.db.tx(async (c) => {
+      const sets = [];
+      const params = [];
+      for (const key of ['name', 'strategy', 'member_timeout', 'wrapup_secs', 'max_callers', 'max_wait_secs', 'hold_when_empty', 'enabled']) {
+        if (patch[key] !== undefined) { params.push(patch[key]); sets.push(`${key} = $${params.length}`); }
+      }
+      if (patch.fail_dest !== undefined) { params.push(patch.fail_dest ? JSON.stringify(patch.fail_dest) : null); sets.push(`fail_dest = $${params.length}`); }
+      if (sets.length) {
+        params.push(id);
+        await c.query(`UPDATE queues SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+      }
+      if (patch.members) await this.setQueueMembers(c, id, patch.members);
+    });
+    return this.getQueue(id);
+  }
+
+  async deleteQueue(id) {
+    const q = await this.getQueue(id);
+    const usedIn = await destinations.references(this.db, 'queue', q.number, { exclude: `queue:${q.number}` });
+    if (usedIn.length) throw conflict(`Queue ${q.number} is still used by: ${usedIn.join(', ')}`, 'in_use');
+    await this.db.query('DELETE FROM queues WHERE id = $1', [id]);
+    return q;
+  }
+
   // ---------------------------------------------------------------- bootstrap
   /**
    * The two seeded extensions get their credentials from the environment on the first start so an existing
@@ -831,7 +917,8 @@ class PbxStore {
     const timeConditions = await this.listTimeConditions();
     const announcements = await this.listAnnouncements();
     const ivrs = await this.listIvrs();
-    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound, ringGroups, timeConditions, announcements, ivrs };
+    const queues = await this.listQueues();
+    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound, ringGroups, timeConditions, announcements, ivrs, queues };
   }
 }
 

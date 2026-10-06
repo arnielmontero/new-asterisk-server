@@ -367,7 +367,7 @@ describe('PBX management API', () => {
       assert.equal(res.body.ok, true);
       assert.equal(res.body.reloaded, true);
       const cmds = h.ami.callsFor('Command').map((c) => c.Command);
-      assert.deepEqual(cmds.filter((c) => !c.startsWith('pjsip qualify')), ['module reload res_pjsip.so', 'dialplan reload']);
+      assert.deepEqual(cmds.filter((c) => !c.startsWith('pjsip qualify')), ['module reload res_pjsip.so', 'queue reload all', 'dialplan reload']);
       assert.ok(cmds.includes('pjsip qualify trk-gw1'), 'reachability of trunks is checked straight away');      const f = files();
       assert.match(f.pjsip, /\[1001\]\(ep-webrtc\)/);
       assert.match(f.pjsip, /\[trk-gw1\]\(ep-trunk\)/);

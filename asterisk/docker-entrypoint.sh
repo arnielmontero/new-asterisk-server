@@ -68,7 +68,7 @@ done
 # atomically (it needs write access to the directory, Asterisk only reads the files).
 GEN_DIR=/pbx-generated
 mkdir -p "$GEN_DIR"
-for f in pjsip_generated.conf extensions_generated.conf; do
+for f in pjsip_generated.conf extensions_generated.conf queues_generated.conf; do
   [ -e "$GEN_DIR/$f" ] || : > "$GEN_DIR/$f"
   chmod 0644 "$GEN_DIR/$f"
 done

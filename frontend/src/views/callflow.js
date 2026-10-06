@@ -15,16 +15,133 @@ export function callflowView() {
   const dialogHost = h('div');
   const rgBox = h('section', { class: 'panel' });
   const tcBox = h('section', { class: 'panel' });
-  let data = { extensions: [], ringGroups: [], timeConditions: [] };
+  const qBox = h('section', { class: 'panel', id: 'queues-panel' });
+  let data = { extensions: [], ringGroups: [], timeConditions: [], queues: [] };
+  let live = { available: false, queues: [] };
+  let stats = { queues: [], agents: [] };
+  let timer = null;
 
   async function load() {
     try {
       data = await loadDestinationData();
       renderRing();
       renderTime();
+      await refreshQueues();
     } catch (err) {
       mount(rgBox, h('p', { class: 'form-error' }, describeError(err)));
     }
+  }
+
+  // ---------------------------------------------------------------------- queues
+  async function refreshQueues() {
+    try {
+      const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+      [live, stats] = await Promise.all([api('GET', '/pbx/queues/status'), api('GET', `/pbx/queues/stats?from=${encodeURIComponent(startOfDay.toISOString())}`)]);
+    } catch { /* keep the last values; the panel says when Asterisk is unreachable */ }
+    renderQueues();
+  }
+
+  const AGENT_STATE = { available: 'online', 'on call': 'incall', ringing: 'incall', busy: 'incall', 'on hold': 'incall', unavailable: 'offline', invalid: 'offline', unknown: 'offline' };
+  const STRATEGY = { ringall: 'ring everyone', leastrecent: 'longest idle first', fewestcalls: 'fewest calls first', rrmemory: 'round robin', random: 'random', linear: 'in order' };
+
+  function renderQueues() {
+    const liveOf = (n) => live.queues.find((q) => q.number === n);
+    const statOf = (n) => stats.queues.find((q) => q.queue === n);
+    mount(
+      qBox,
+      h('div', { class: 'section-head' }, h('h2', null, 'Call queues'),
+        h('button', { class: 'btn primary', id: 'add-queue', onclick: () => editQueue(null) }, 'Add queue')),
+      h('p', { class: 'muted small' }, 'Callers wait (hearing ringing) until an agent is free. Agents can pause themselves on their dashboard. Numbers below are for today. A queue is a destination for inbound routes, menus and schedules, and can be dialled internally.'),
+      !live.available ? h('p', { class: 'banner warn' }, 'Live queue state is unavailable (telephony system not connected).') : null,
+      dataTable(
+        ['Queue', 'Strategy', 'Agents', 'Waiting', 'Today', 'If it cannot answer', ''],
+        data.queues.map((q) => {
+          const l = liveOf(q.number);
+          const st = statOf(q.number);
+          return [
+            h('div', null, h('strong', null, q.number), ' ', q.name),
+            `${STRATEGY[q.strategy] || q.strategy}, ${q.member_timeout}s per agent`,
+            h('div', null, q.members.map((m) => {
+              const a = l?.members.find((x) => x.extension === m);
+              const state = !live.available ? 'unknown' : !a ? 'offline' : a.paused ? 'paused' : a.state;
+              return h('span', { class: 'agent-chip', 'data-agent': m }, `${m} `, stateBadge(AGENT_STATE[state] || 'offline', state.toUpperCase()));
+            })),
+            l ? String(l.calls) : '\u2014',
+            st ? h('div', { class: 'small' }, `${st.answered} answered, ${st.abandoned} abandoned, ${st.unserved} turned away`, h('br'), `avg wait ${st.avg_wait}s, avg talk ${st.avg_talk}s${st.service_level === null ? '' : `, service level ${st.service_level}%`}`) : h('span', { class: 'muted' }, 'no calls yet'),
+            describeDestination(q.fail_dest, data),
+            h('div', { class: 'row-actions' },
+              q.enabled ? null : stateBadge('offline', 'Disabled'),
+              h('button', { class: 'btn small', onclick: () => editQueue(q) }, 'Edit'),
+              h('button', { class: 'btn small danger', onclick: () => remove('queues', q, `queue ${q.number}`) }, 'Delete')),
+          ];
+        }),
+        { empty: 'No queues yet.' },
+      ),
+    );
+  }
+
+  function editQueue(q) {
+    const creating = !q;
+    openDialog(dialogHost, {
+      title: creating ? 'Add queue' : `Edit queue ${q.number}`,
+      wide: true,
+      build: ({ close, showError }) => {
+        const f = {
+          number: h('input', { required: true, pattern: '[0-9]{3,6}', placeholder: 'e.g. 800', value: q?.number || '', disabled: !creating }),
+          name: h('input', { required: true, maxlength: 40, placeholder: 'e.g. Support', value: q?.name || '' }),
+          strategy: select(Object.entries(STRATEGY).map(([value, label]) => ({ value, label: label[0].toUpperCase() + label.slice(1) })), q?.strategy || 'ringall'),
+          timeout: h('input', { type: 'number', min: 5, max: 60, value: q?.member_timeout || 15 }),
+          wrapup: h('input', { type: 'number', min: 0, max: 120, value: q?.wrapup_secs ?? 5 }),
+          maxWait: h('input', { type: 'number', min: 10, max: 3600, value: q?.max_wait_secs || 120 }),
+          maxCallers: h('input', { type: 'number', min: 0, max: 500, value: q?.max_callers ?? 0 }),
+          hold: h('input', { type: 'checkbox', checked: q ? q.hold_when_empty : false }),
+          enabled: h('input', { type: 'checkbox', checked: q ? q.enabled : true }),
+        };
+        const fail = destinationPicker(data, { value: q?.fail_dest, allowNone: true, noneLabel: 'Hang up', exclude: q ? `queue:${q.number}` : null });
+        let members = [...(q?.members || [])];
+        const list = h('div', { class: 'stack' });
+        const add = h('select');
+        const draw = () => {
+          mount(list, members.length ? members.map((n, i) => {
+            const x = data.extensions.find((e) => e.number === n);
+            return h('div', { class: 'order-row' }, h('span', null, `${i + 1}. ${n} ${x ? x.display_name : ''}`),
+              h('button', { class: 'btn small', type: 'button', disabled: i === 0, onclick: () => { [members[i - 1], members[i]] = [members[i], members[i - 1]]; draw(); } }, '\u2191'),
+              h('button', { class: 'btn small', type: 'button', disabled: i === members.length - 1, onclick: () => { [members[i + 1], members[i]] = [members[i], members[i + 1]]; draw(); } }, '\u2193'),
+              h('button', { class: 'btn small danger', type: 'button', onclick: () => { members = members.filter((m) => m !== n); draw(); } }, 'Remove'));
+          }) : h('p', { class: 'muted small' }, 'No agents yet.'));
+          mount(add, h('option', { value: '' }, 'Add an agent...'), data.extensions.filter((e) => !members.includes(e.number)).map((e) => h('option', { value: e.number }, `${e.number} ${e.display_name}`)));
+        };
+        add.addEventListener('change', () => { if (add.value) { members.push(add.value); draw(); } });
+        draw();
+        return h('form', {
+          class: 'stack',
+          onsubmit: async (e) => {
+            e.preventDefault();
+            const body = {
+              name: f.name.value.trim(), strategy: f.strategy.value, member_timeout: Number(f.timeout.value) || 15, wrapup_secs: Number(f.wrapup.value) || 0,
+              max_wait_secs: Number(f.maxWait.value) || 120, max_callers: Number(f.maxCallers.value) || 0, hold_when_empty: f.hold.checked,
+              members, fail_dest: fail.get(), enabled: f.enabled.checked,
+            };
+            try {
+              if (creating) await api('POST', '/pbx/queues', { number: f.number.value.trim(), ...body }); else await api('PATCH', `/pbx/queues/${q.id}`, body);
+              store.toast('Queue saved', 'info');
+              close();
+              await load();
+            } catch (err) { showError(err); }
+          },
+        },
+        h('div', { class: 'form-grid' }, field('Number', f.number, creating ? 'Dial this to join the queue.' : null), field('Name', f.name)),
+        field('How agents are chosen', f.strategy),
+        h('div', null, h('strong', null, 'Agents (extensions that answer this queue)'), list, add),
+        h('div', { class: 'form-grid' },
+          field('Ring each agent for (seconds)', f.timeout), field('Rest after a call (seconds)', f.wrapup),
+          field('A caller waits at most (seconds)', f.maxWait), field('Callers waiting at most (0 = no limit)', f.maxCallers)),
+        check(f.hold, 'Let callers wait even when no agent is online', '(otherwise callers go to the fall-back straight away)'),
+        field('If the caller cannot be served (waited too long, queue full, nobody online)', fail.el),
+        check(f.enabled, 'Enabled'),
+        h('div', { class: 'actions' }, h('button', { class: 'btn primary', type: 'submit' }, 'Save'), h('button', { class: 'btn', type: 'button', onclick: close }, 'Cancel')));
+      },
+    });
   }
 
   // ----------------------------------------------------------------- ring groups
@@ -227,5 +344,6 @@ export function callflowView() {
   }
 
   load();
-  return { el: h('div', { class: 'stack' }, h('h1', null, 'Call flow'), rgBox, tcBox, dialogHost), destroy() {} };
+  timer = setInterval(refreshQueues, 5000);
+  return { el: h('div', { class: 'stack' }, h('h1', null, 'Call flow'), qBox, rgBox, tcBox, dialogHost), destroy() { clearInterval(timer); } };
 }

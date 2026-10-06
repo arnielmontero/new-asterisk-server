@@ -15,6 +15,7 @@ const { PbxStore } = require('./pbx/store');
 const { ConfigApplier } = require('./pbx/apply');
 const { TrunkStatus } = require('./pbx/trunk-status');
 const { CdrService } = require('./cdr/service');
+const { QueueService } = require('./queues/service');
 const { PagingService } = require('./paging/service');
 const { watchOriginateResults } = require('./calls/routes');
 const { createSocketServer } = require('./socket');
@@ -64,12 +65,13 @@ async function main() {
     onReloaded: async () => { await state.sync(); await trunkStatus.refresh(); },
   });
   const cdr = new CdrService({ db, registry, ami, logger });
+  const queueService = new QueueService({ ami, db, logger });
   const paging = new PagingService({ ami, state, registry, audit, logger });
   watchOriginateResults({ ami, audit });
 
   let socketApi = null;
   const app = createApp({
-    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr,
+    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService,
     version: pkg.version,
     startedAt,
     onUserSecurityChange: (userId) => socketApi?.disconnectUser(userId),

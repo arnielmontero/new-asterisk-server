@@ -192,3 +192,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .85em; }
 .ivr-row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .ivr-row select { width: auto; }
 .keypad { display: grid; grid-template-columns: repeat(3, 3.2rem); gap: .3rem; margin: .5rem 0; }
+
+/* queues */
+.agent-chip { display: inline-block; margin: 0 .5rem .25rem 0; white-space: nowrap; }

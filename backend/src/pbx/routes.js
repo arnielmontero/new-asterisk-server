@@ -9,7 +9,7 @@ const { badRequest } = require('../errors');
 const regenerateBody = z.strictObject({ which: z.enum(['browser', 'phone', 'both']).optional().default('both') });
 
 /** Mounted at /pbx behind authenticate + requireRole('admin'). Every change is audited and applied to Asterisk. */
-function pbxRoutes({ store, applier, trunkStatus, audit, config }) {
+function pbxRoutes({ store, applier, trunkStatus, queueService, audit, config }) {
   const router = express.Router();
   const id = validate({ params: schemas.idParam });
 
@@ -384,6 +384,50 @@ function pbxRoutes({ store, applier, trunkStatus, audit, config }) {
       res.json({ status: 'deleted', number: i.number });
     } catch (err) {
       await record(req, 'pbx.ivr.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  // ---------------------------------------------------------------------- queues
+  router.get('/queues', async (_req, res) => {
+    res.json({ queues: await store.listQueues() });
+  });
+
+  router.get('/queues/status', async (_req, res) => {
+    res.json(await queueService.status());
+  });
+
+  router.get('/queues/stats', validate({ query: schemas.queueStatsQuery }), async (req, res) => {
+    res.json(await queueService.stats(req.valid.query));
+  });
+
+  router.post('/queues', validate({ body: schemas.createQueue }), async (req, res) => {
+    try {
+      const q = await store.createQueue(req.valid.body);
+      await record(req, 'pbx.queue.create', q.number, { name: q.name, strategy: q.strategy, members: q.members });
+      changed('queue.create');
+      res.status(201).json({ queue: q });
+    } catch (err) {
+      await record(req, 'pbx.queue.create', req.valid.body.number, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  router.patch('/queues/:id', validate({ params: schemas.idParam, body: schemas.patchQueue }), async (req, res) => {
+    const q = await store.updateQueue(req.valid.params.id, req.valid.body);
+    await record(req, 'pbx.queue.update', q.number, { fields: Object.keys(req.valid.body) });
+    changed('queue.update');
+    res.json({ queue: q });
+  });
+
+  router.delete('/queues/:id', id, async (req, res) => {
+    try {
+      const q = await store.deleteQueue(req.valid.params.id);
+      await record(req, 'pbx.queue.delete', q.number);
+      changed('queue.delete');
+      res.json({ status: 'deleted', number: q.number });
+    } catch (err) {
+      await record(req, 'pbx.queue.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
       throw err;
     }
   });

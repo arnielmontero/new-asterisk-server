@@ -2,9 +2,9 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { renderAll } = require('./render');
+const { renderAll, renderQueues, queueOrders } = require('./render');
 
-const FILES = { pjsip: 'pjsip_generated.conf', dialplan: 'extensions_generated.conf' };
+const FILES = { pjsip: 'pjsip_generated.conf', dialplan: 'extensions_generated.conf', queues: 'queues_generated.conf' };
 
 /**
  * Turns the database into live Asterisk configuration:
@@ -33,8 +33,9 @@ class ConfigApplier extends EventEmitter {
     this.last = null; // last result
     this.checksum = null; // checksum of the files currently on disk
     this.reloadedChecksum = null; // checksum Asterisk last confirmed loading
-    this.sums = { pjsip: null, dialplan: null }; // per-file checksums on disk
-    this.loaded = { pjsip: null, dialplan: null }; // per-file checksums Asterisk last confirmed loading
+    this.sums = { pjsip: null, dialplan: null, queues: null }; // per-file checksums on disk
+    this.loaded = { pjsip: null, dialplan: null, queues: null }; // per-file checksums Asterisk last confirmed loading
+    this.queueOrder = new Map(); // in-order queues -> agent order Asterisk currently holds
 
     ami.on('connected', () => {
       if (this.checksum && this.reloadedChecksum !== this.checksum) this.schedule('ami-connected');
@@ -82,20 +83,39 @@ class ConfigApplier extends EventEmitter {
         await this.writeFiles(rendered, {
           pjsip: rendered.pjsipChecksum !== this.sums.pjsip,
           dialplan: rendered.dialplanChecksum !== this.sums.dialplan,
+          queues: rendered.queuesChecksum !== this.sums.queues,
         });
       }
       this.checksum = rendered.checksum;
-      this.sums = { pjsip: rendered.pjsipChecksum, dialplan: rendered.dialplanChecksum };
+      this.sums = { pjsip: rendered.pjsipChecksum, dialplan: rendered.dialplanChecksum, queues: rendered.queuesChecksum };
 
       // Only what changed is reloaded: a dialplan-only edit (do not disturb, a route ...) never touches SIP
       // registrations or trunk state.
       const needPjsip = force || this.loaded.pjsip !== rendered.pjsipChecksum;
       const needDialplan = force || this.loaded.dialplan !== rendered.dialplanChecksum;
+      const needQueues = force || this.loaded.queues !== rendered.queuesChecksum;
       let reloaded = false;
-      if (this.ami.isConnected() && (needPjsip || needDialplan)) {
+      if (this.ami.isConnected() && (needPjsip || needDialplan || needQueues)) {
         if (needPjsip) {
           await this.reloadPjsip();
           this.loaded.pjsip = rendered.pjsipChecksum;
+        }
+        if (needQueues) {
+          // Asterisk keeps the member order it first loaded and a reload does not reorder it. For an in-order queue whose
+          // agent order changed, reload once without the queue (Asterisk forgets it) and again with it.
+          const order = queueOrders(snapshot);
+          const linear = new Set(snapshot.queues.filter((q) => q.strategy === 'linear').map((q) => q.number));
+          const reordered = [...order].filter(([n, o]) => linear.has(n) && this.queueOrder.has(n) && this.queueOrder.get(n) !== o).map(([n]) => n);
+          if (reordered.length) {
+            await this.writeFiles({ queues: renderQueues({ ...snapshot, queues: snapshot.queues.filter((q) => !reordered.includes(q.number)) }) }, { queues: true });
+            await this.reloadQueues();
+            await new Promise((r) => setTimeout(r, 300));
+            await this.writeFiles(rendered, { queues: true });
+          }
+          // Before the dialplan: a dialplan that sends calls to a queue must find the queue already defined.
+          await this.reloadQueues();
+          this.loaded.queues = rendered.queuesChecksum;
+          this.queueOrder = order;
         }
         if (needDialplan) {
           await this.reloadDialplan();
@@ -126,7 +146,7 @@ class ConfigApplier extends EventEmitter {
     return result;
   }
 
-  async writeFiles({ pjsip, dialplan }, which = { pjsip: true, dialplan: true }) {
+  async writeFiles({ pjsip, dialplan, queues }, which = { pjsip: true, dialplan: true, queues: true }) {
     await fs.mkdir(this.dir, { recursive: true });
     const write = async (name, content) => {
       const target = path.join(this.dir, name);
@@ -135,6 +155,7 @@ class ConfigApplier extends EventEmitter {
       await fs.rename(tmp, target);
     };
     // Dialplan first: a new PJSIP object is only reachable through the dialplan that references it.
+    if (which.queues) await write(FILES.queues, queues);
     if (which.dialplan) await write(FILES.dialplan, dialplan);
     if (which.pjsip) await write(FILES.pjsip, pjsip);
   }
@@ -160,6 +181,11 @@ class ConfigApplier extends EventEmitter {
   async reloadPjsip() {
     const pj = await this.command('module reload res_pjsip.so');
     if (/failed|error|not found|unable/i.test(pj) && !/reloaded successfully/i.test(pj)) throw new Error(`PJSIP reload failed: ${pj.trim().slice(0, 300)}`);
+  }
+
+  async reloadQueues() {
+    const out = await this.command('queue reload all');
+    if (/unable|error|failed/i.test(out)) throw new Error(`Queue reload failed: ${out.trim().slice(0, 300)}`);
   }
 
   async reloadDialplan() {

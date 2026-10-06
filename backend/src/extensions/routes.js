@@ -16,7 +16,7 @@ const mySettings = z.strictObject({
 }).refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
 
 /** Mounted behind authenticate (all roles may read status). */
-function extensionRoutes({ state, registry, store, config, applier, audit }) {
+function extensionRoutes({ state, registry, store, config, applier, audit, queueService }) {
   const router = express.Router();
 
   const pagingGroups = () => registry.pagingGroups().map((g) => ({ number: g.number, name: g.name, members: g.members }));
@@ -75,6 +75,30 @@ function extensionRoutes({ state, registry, store, config, applier, audit }) {
     await audit.log({ user, action: 'extension.self.update', target: ext.number, ip: clientIp(req), details: { fields: Object.keys(req.valid.body), dnd: ext.dnd } });
     applier.schedule('extension.self');
     res.json({ extension: { number: ext.number, dnd: ext.dnd, fwd_all: ext.fwd_all, fwd_busy: ext.fwd_busy, fwd_noanswer: ext.fwd_noanswer, noanswer_secs: ext.noanswer_secs } });
+  });
+
+  // The queues the caller's extension serves, who is waiting, and a pause switch (stop receiving queue calls).
+  router.get('/my/queues', async (req, res) => {
+    const { user } = req;
+    if (!['admin', 'operator'].includes(user.role) || !user.extension) throw forbidden('You have no extension');
+    const mine = (await store.listQueues()).filter((q) => q.enabled && q.members.includes(user.extension));
+    if (!mine.length) { res.json({ queues: [] }); return; }
+    const live = new Map((await queueService.status().catch(() => ({ queues: [] }))).queues.map((q) => [q.number, q]));
+    res.json({
+      queues: mine.map((q) => {
+        const l = live.get(q.number);
+        const me = l?.members.find((m) => m.extension === user.extension);
+        return { number: q.number, name: q.name, waiting: l?.calls || 0, longestWaitSecs: Math.max(0, ...(l?.callers.map((c) => c.waitSecs) || [0])), paused: !!me?.paused, state: me?.state || 'unknown' };
+      }),
+    });
+  });
+
+  router.post('/my/queues/pause', validate({ body: z.strictObject({ paused: z.boolean() }) }), async (req, res) => {
+    const { user } = req;
+    if (!['admin', 'operator'].includes(user.role) || !user.extension) throw forbidden('You have no extension');
+    await queueService.pause(user.extension, req.valid.body.paused);
+    await audit.log({ user, action: req.valid.body.paused ? 'queue.pause' : 'queue.resume', target: user.extension, ip: clientIp(req) });
+    res.json({ paused: req.valid.body.paused });
   });
 
   return router;

@@ -12,7 +12,8 @@ export function dashboardView({ softphone }) {
 
   const extPanel = h('section', { class: 'panel' }, h('h2', null, 'Extensions'), cards);
   const mine = buildMyHandling();
-  const el = h('div', { class: 'dashboard' }, extPanel, paging, phone.el, mine.el);
+  const queuesPanel = buildMyQueues();
+  const el = h('div', { class: 'dashboard' }, extPanel, paging, phone.el, queuesPanel.el, mine.el);
 
   function renderCards(s) {
     const user = s.user;
@@ -141,6 +142,7 @@ export function dashboardView({ softphone }) {
   function update(s) {
     if (!s.user) return;
     mine.update(s);
+    queuesPanel.update(s);
     renderCards(s);
     renderPaging(s);
     phone.update(s);
@@ -278,6 +280,60 @@ function buildMyHandling() {
       const eligible = !!s.user && ['admin', 'operator'].includes(s.user.role) && !!s.user.extension;
       el.hidden = !eligible;
       if (eligible && loadedFor !== s.user.extension) { loadedFor = s.user.extension; load(s.user.extension); }
+    },
+  };
+}
+
+// ------------------------------------------------------------------ my queues
+// The queues this extension answers: who is waiting, and a switch to stop receiving queue calls.
+function buildMyQueues() {
+  const el = h('section', { class: 'panel', id: 'my-queues', hidden: true });
+  let loadedFor = null;
+  let timer = null;
+  let queues = [];
+
+  async function load() {
+    try {
+      queues = (await api('GET', '/my/queues')).queues;
+    } catch { return; }
+    draw();
+  }
+
+  async function setPaused(paused) {
+    try {
+      await api('POST', '/my/queues/pause', { paused });
+      store.toast(paused ? 'Paused: no queue calls for you' : 'Resumed', 'info');
+    } catch (err) { store.toast(describeError(err)); }
+    await load();
+  }
+
+  function draw() {
+    el.hidden = queues.length === 0;
+    if (!queues.length) return;
+    const paused = queues.some((q) => q.paused);
+    mount(
+      el,
+      h('h2', null, 'My queues'),
+      paused ? h('div', { class: 'banner warn' }, 'You are paused: queue calls skip you.') : null,
+      h('div', { class: 'stack' }, queues.map((q) =>
+        h('div', { class: 'order-row', 'data-queue': q.number },
+          h('span', null, h('strong', null, `${q.number} ${q.name}`), `  ${q.waiting} waiting${q.waiting ? ` (longest ${q.longestWaitSecs}s)` : ''}`),
+          h('span', { class: 'muted small' }, q.paused ? 'paused' : q.state)))),
+      h('div', { class: 'actions' }, h('button', { class: `btn ${paused ? 'primary' : ''}`, id: 'my-queue-pause', onclick: () => setPaused(!paused) }, paused ? 'Resume queue calls' : 'Pause queue calls')),
+    );
+  }
+
+  return {
+    el,
+    update(s) {
+      const eligible = !!s.user && ['admin', 'operator'].includes(s.user.role) && !!s.user.extension;
+      if (!eligible) { el.hidden = true; return; }
+      if (loadedFor !== s.user.extension) {
+        loadedFor = s.user.extension;
+        load();
+        clearInterval(timer);
+        timer = setInterval(load, 5000);
+      }
     },
   };
 }

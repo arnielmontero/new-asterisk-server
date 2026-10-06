@@ -5,7 +5,7 @@ const { badRequest } = require('../errors');
 // A destination is where a call goes next: { type, value }. Every feature that can route a call (inbound
 // routes, trunk defaults, ring group fallbacks, time conditions, forwarding ...) uses this one shape, so a
 // new kind of destination only has to be added here and in the renderer.
-const DEST_TYPES = ['extension', 'ringgroup', 'timecondition', 'ivr', 'announcement', 'echo', 'hangup'];
+const DEST_TYPES = ['extension', 'ringgroup', 'timecondition', 'ivr', 'announcement', 'queue', 'echo', 'hangup'];
 const HANGUP_REASONS = ['', 'busy', 'congestion', 'reject'];
 
 const destinationSchema = z.strictObject({
@@ -13,7 +13,7 @@ const destinationSchema = z.strictObject({
   value: z.string().trim().max(40).optional().default(''),
 });
 
-const NUMBER_TYPES = new Set(['extension', 'ringgroup', 'ivr']);
+const NUMBER_TYPES = new Set(['extension', 'ringgroup', 'ivr', 'queue']);
 const ID_TYPES = new Set(['timecondition', 'announcement']);
 
 /** Name of the dialplan context that handles a destination. Every destination type has one (rendered). */
@@ -31,6 +31,7 @@ const label = (dest) => {
     case 'ringgroup': return `ring group ${dest.value}`;
     case 'timecondition': return `time condition ${dest.value}`;
     case 'ivr': return `menu ${dest.value}`;
+    case 'queue': return `queue ${dest.value}`;
     case 'announcement': return `announcement ${dest.value}`;
     case 'echo': return 'echo test';
     default: return 'reject';
@@ -50,6 +51,7 @@ async function assertValid(db, dest) {
   if (dest.type === 'extension' && !(await exists('SELECT 1 FROM extensions WHERE number = $1', [dest.value]))) throw bad(`Extension ${dest.value} does not exist`);
   if (dest.type === 'ringgroup' && !(await exists('SELECT 1 FROM ring_groups WHERE number = $1', [dest.value]))) throw bad(`Ring group ${dest.value} does not exist`);
   if (dest.type === 'timecondition' && !(await exists('SELECT 1 FROM time_conditions WHERE id = $1', [dest.value]))) throw bad(`Time condition ${dest.value} does not exist`);
+  if (dest.type === 'queue' && !(await exists('SELECT 1 FROM queues WHERE number = $1', [dest.value]))) throw bad(`Queue ${dest.value} does not exist`);
   if (dest.type === 'ivr' && !(await exists('SELECT 1 FROM ivrs WHERE number = $1', [dest.value]))) throw bad(`Menu ${dest.value} does not exist`);
   if (dest.type === 'announcement' && !(await exists('SELECT 1 FROM announcements WHERE id = $1', [dest.value]))) throw bad(`Announcement ${dest.value} does not exist`);
 }
@@ -73,6 +75,9 @@ async function references(db, type, value, { exclude = null } = {}) {
   }
   for (const r of await q(`SELECT id, name FROM time_conditions WHERE (match_dest->>'type' = $1 AND match_dest->>'value' = $2) OR (nomatch_dest->>'type' = $1 AND nomatch_dest->>'value' = $2)`, [type, value])) {
     if (exclude !== `timecondition:${r.id}`) out.push(`time condition "${r.name}"`);
+  }
+  for (const r of await q(`SELECT number FROM queues WHERE fail_dest->>'type' = $1 AND fail_dest->>'value' = $2`, [type, value])) {
+    if (exclude !== `queue:${r.number}`) out.push(`queue ${r.number} fallback`);
   }
   for (const r of await q(`SELECT number FROM ivrs WHERE fail_dest->>'type' = $1 AND fail_dest->>'value' = $2`, [type, value])) {
     if (exclude !== `ivr:${r.number}`) out.push(`menu ${r.number} fallback`);
