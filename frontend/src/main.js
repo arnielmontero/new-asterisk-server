@@ -13,6 +13,7 @@ import { extensionsView } from './views/extensions.js';
 import { trunksView } from './views/trunks.js';
 import { routesView } from './views/routes.js';
 import { callsView } from './views/calls.js';
+import { callflowView } from './views/callflow.js';
 
 const root = document.getElementById('app');
 const audioEl = document.getElementById('remote-audio');
@@ -28,6 +29,7 @@ const ROUTES = {
   '#/extensions': { admin: true, view: () => extensionsView() },
   '#/trunks': { admin: true, view: () => trunksView() },
   '#/routes': { admin: true, view: () => routesView() },
+  '#/callflow': { admin: true, view: () => callflowView() },
   '#/calls': { admin: true, view: () => callsView() },
   '#/users': { admin: true, view: () => usersView() },
   '#/audit': { admin: true, view: () => auditView() },
@@ -82,7 +84,7 @@ function renderChrome() {
     chrome.header,
     h('div', { class: 'brand' }, 'LAN Communications'),
     h('nav', null, navLink('#/', 'Dashboard'),
-      user.role === 'admin' ? [navLink('#/extensions', 'Extensions'), navLink('#/trunks', 'Trunks'), navLink('#/routes', 'Routes'), navLink('#/calls', 'Call history'), navLink('#/users', 'Users'), navLink('#/audit', 'Audit log'), navLink('#/system', 'System')] : null),
+      user.role === 'admin' ? [navLink('#/extensions', 'Extensions'), navLink('#/trunks', 'Trunks'), navLink('#/routes', 'Routes'), navLink('#/callflow', 'Call flow'), navLink('#/calls', 'Call history'), navLink('#/users', 'Users'), navLink('#/audit', 'Audit log'), navLink('#/system', 'System')] : null),
     h('div', { class: 'who' },
       canUseSoftphone(user) ? h('span', { class: `status-chip sip-${s.sip.state}`, id: 'chip-sip', title: s.sip.reason || '' }, `SIP ${sipLabel}`) : null,
       h('span', { class: `status-chip ${s.backendOk && s.socketConnected ? 'ok' : 'bad'}`, id: 'chip-server' },

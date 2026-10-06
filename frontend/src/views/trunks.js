@@ -1,7 +1,7 @@
 import { h, mount } from '../dom.js';
 import { api, describeError } from '../api.js';
 import { store } from '../store.js';
-import { field, check, dataTable, openDialog, nullIfEmpty, splitList, select, stateBadge } from './common.js';
+import { field, check, dataTable, openDialog, nullIfEmpty, splitList, select, stateBadge, loadDestinationData, destinationPicker } from './common.js';
 
 const KINDS = [
   { value: 'provider', label: 'SIP provider (ITSP / VoIP carrier)' },
@@ -21,6 +21,7 @@ export function trunksView() {
   const box = h('section', { class: 'panel' });
   let trunks = [];
   let extensions = [];
+  let destData = { extensions: [], ringGroups: [], timeConditions: [] };
   let live = new Map();
 
   const unsubscribe = store.subscribe((s) => {
@@ -32,6 +33,7 @@ export function trunksView() {
       const [t, e] = await Promise.all([api('GET', '/pbx/trunks'), api('GET', '/pbx/extensions')]);
       trunks = t.trunks;
       extensions = e.extensions;
+      destData = await loadDestinationData();
       live = new Map(trunks.filter((x) => x.status).map((x) => [x.name, x.status]));
       render();
     } catch (err) {
@@ -95,8 +97,6 @@ export function trunksView() {
           max: h('input', { type: 'number', min: 0, max: 500, value: t?.max_channels ?? 0 }),
           cidNum: h('input', { placeholder: 'e.g. 15551234567', value: t?.caller_id_num || '' }),
           cidName: h('input', { value: t?.caller_id_name || '' }),
-          defType: select([{ value: '', label: 'Reject the call' }, { value: 'extension', label: 'Ring an extension' }, { value: 'echo', label: 'Echo test' }], t?.inbound_default?.type || ''),
-          defExt: select(extensions.map((e) => ({ value: e.number, label: `${e.number} ${e.display_name}` })), t?.inbound_default?.value || extensions[0]?.number),
           qualify: h('input', { type: 'checkbox', checked: t ? t.qualify : true }),
           enabled: h('input', { type: 'checkbox', checked: t ? t.enabled : true }),
           notes: h('input', { maxlength: 500, value: t?.notes || '' }),
@@ -117,9 +117,8 @@ export function trunksView() {
           ipOnly.hidden = reg;
         };
         f.mode.addEventListener('change', syncMode);
-        const syncDef = () => { f.defExt.hidden = f.defType.value !== 'extension'; };
-        f.defType.addEventListener('change', syncDef);
-        setTimeout(() => { syncMode(); syncDef(); }, 0);
+        const def = destinationPicker(destData, { value: t?.inbound_default, allowNone: true, noneLabel: 'Reject the call' });
+        setTimeout(syncMode, 0);
 
         return h('form', {
           class: 'stack',
@@ -145,7 +144,7 @@ export function trunksView() {
               max_channels: Number(f.max.value) || 0,
               caller_id_num: nullIfEmpty(f.cidNum.value),
               caller_id_name: nullIfEmpty(f.cidName.value),
-              inbound_default: f.defType.value ? { type: f.defType.value, value: f.defType.value === 'extension' ? f.defExt.value : '' } : null,
+              inbound_default: def.get(),
               qualify: f.qualify.checked,
               enabled: f.enabled.checked,
               notes: nullIfEmpty(f.notes.value),
@@ -170,7 +169,7 @@ export function trunksView() {
         registerOnly, ipOnly,
         h('fieldset', { class: 'members' }, h('legend', null, 'Audio codecs (in order of preference: ulaw, alaw, g722 ...)'),
           h('div', { class: 'inline-checks' }, codecBoxes.map((b) => check(b.el, b.c)))),
-        field('Calls that match no inbound route', f.defType), f.defExt,
+        field('Calls that match no inbound route', def.el),
         check(f.qualify, 'Check that the trunk is reachable', '(sends SIP OPTIONS every minute)'),
         advanced,
         field('Notes', f.notes),

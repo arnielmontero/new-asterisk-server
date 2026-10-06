@@ -1,5 +1,6 @@
 'use strict';
 const { z } = require('zod');
+const { destinationSchema } = require('./destinations');
 
 // Everything here is rendered into Asterisk configuration, where ; # $ { } " and newlines are
 // special. Schemas therefore whitelist characters instead of trying to escape them.
@@ -54,6 +55,11 @@ const patchExtension = z
     outbound_cid: callerNumber.nullable().optional(),
     enabled: bool.optional(),
     notes: nullableText(500).optional(),
+    dnd: bool.optional(),
+    fwd_all: destinationSchema.nullable().optional(),
+    fwd_busy: destinationSchema.nullable().optional(),
+    fwd_noanswer: destinationSchema.nullable().optional(),
+    noanswer_secs: z.coerce.number().int().min(5).max(120).optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
 
@@ -80,12 +86,7 @@ const trunkPassword = z.string().regex(/^[A-Za-z0-9!@%^&*()_+=.,:?~-]{1,128}$/, 
 const codecList = z.array(z.enum(CODECS)).min(1).max(6);
 const ipList = z.array(z.string().trim().regex(CIDR_RE, 'Use IPv4 addresses or CIDR ranges')).max(16);
 
-const destination = z
-  .strictObject({
-    type: z.enum(['extension', 'echo', 'hangup']),
-    value: z.string().trim().max(40).optional().default(''),
-  })
-  .nullable();
+const destination = destinationSchema.nullable();
 
 const trunkBase = {
   name: z.string().trim().regex(SLUG_RE, 'Name must be 2-24 characters: start with a letter, then a-z 0-9 _ -'),
@@ -168,7 +169,7 @@ const inboundRoute = {
   name: z.string().trim().min(1).max(60).regex(/^[\p{L}\p{N} .,'&()_-]+$/u, "Name may use letters, digits, spaces and . , ' & ( ) _ -"),
   did: z.string().trim().regex(DID_RE, 'Use digits, +digits, an Asterisk pattern such as _555XXXX, or * for any number'),
   trunk_id: z.coerce.number().int().positive().nullable(),
-  destination: z.strictObject({ type: z.enum(['extension', 'echo', 'hangup']), value: z.string().trim().max(40).optional().default('') }),
+  destination: destinationSchema,
   cid_name_prefix: z.string().trim().regex(DIALPLAN_TEXT_RE, 'Letters, digits, spaces and . _ - only').nullable(),
   enabled: bool,
 };
@@ -210,6 +211,67 @@ const patchOutbound = z
   .strictObject(Object.fromEntries(Object.entries(outboundRoute).map(([k, v]) => [k, v.optional()])))
   .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
 
+const ringGroupFields = {
+  name: z.string().trim().regex(NAME_RE, "Name may use letters, digits, spaces and . , ' & ( ) _ - (max 40)"),
+  strategy: z.enum(['ringall', 'sequential']),
+  ring_secs: z.coerce.number().int().min(5).max(120),
+  members: z.array(extNumber).min(1, 'Add at least one member').max(50),
+  fail_dest: destination,
+  enabled: bool,
+};
+const createRingGroup = z.strictObject({
+  number: extNumber,
+  name: ringGroupFields.name,
+  strategy: ringGroupFields.strategy.optional().default('ringall'),
+  ring_secs: ringGroupFields.ring_secs.optional().default(20),
+  members: ringGroupFields.members,
+  fail_dest: ringGroupFields.fail_dest.optional().default(null),
+  enabled: ringGroupFields.enabled.optional().default(true),
+});
+const patchRingGroup = z
+  .strictObject(Object.fromEntries(Object.entries(ringGroupFields).map(([k, v]) => [k, v.optional()])))
+  .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
+
+const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const timeZone = z.string().trim().max(40).regex(/^[A-Za-z]+(?:[/_+-][A-Za-z0-9_+-]+)*$/, 'Not a valid time zone name')
+  .refine((tz) => {
+    try { new Intl.DateTimeFormat('en', { timeZone: tz }); return true; } catch { return false; }
+  }, 'Unknown time zone (use a name such as America/New_York or UTC)');
+const timeRule = z.strictObject({
+  days: z.array(z.enum(DAYS)).min(1, 'Choose at least one day').max(7),
+  from: z.string().regex(HHMM, 'Use HH:MM'),
+  to: z.string().regex(HHMM, 'Use HH:MM'),
+}).refine((r) => r.from !== r.to, { message: 'Start and end must differ', path: ['to'] });
+const holiday = z.strictObject({
+  month: z.coerce.number().int().min(1).max(12),
+  day: z.coerce.number().int().min(1).max(31),
+  name: z.string().trim().regex(DIALPLAN_TEXT_RE, 'Letters, digits, spaces and . _ - only').optional().default(''),
+});
+const timeConditionFields = {
+  name: z.string().trim().min(1).max(60).regex(/^[\p{L}\p{N} .,'&()_-]+$/u, "Name may use letters, digits, spaces and . , ' & ( ) _ -"),
+  timezone: timeZone,
+  rules: z.array(timeRule).max(40),
+  holidays: z.array(holiday).max(100),
+  match_dest: destinationSchema,
+  nomatch_dest: destinationSchema,
+  override: z.enum(['auto', 'open', 'closed']),
+  enabled: bool,
+};
+const createTimeCondition = z.strictObject({
+  name: timeConditionFields.name,
+  timezone: timeConditionFields.timezone.optional().default('UTC'),
+  rules: timeConditionFields.rules,
+  holidays: timeConditionFields.holidays.optional().default([]),
+  match_dest: timeConditionFields.match_dest,
+  nomatch_dest: timeConditionFields.nomatch_dest,
+  override: timeConditionFields.override.optional().default('auto'),
+  enabled: timeConditionFields.enabled.optional().default(true),
+});
+const patchTimeCondition = z
+  .strictObject(Object.fromEntries(Object.entries(timeConditionFields).map(([k, v]) => [k, v.optional()])))
+  .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
+
 const idParam = z.strictObject({ id: z.coerce.number().int().positive() });
 
 const cdrQuery = z.strictObject({
@@ -237,6 +299,7 @@ module.exports = {
   schemas: {
     createExtension, patchExtension, createPagingGroup, patchPagingGroup,
     createTrunk, patchTrunk, createInbound, patchInbound, createOutbound, patchOutbound,
+    createRingGroup, patchRingGroup, createTimeCondition, patchTimeCondition,
     idParam, cdrQuery, cdrStatsQuery,
   },
   trunkRules,

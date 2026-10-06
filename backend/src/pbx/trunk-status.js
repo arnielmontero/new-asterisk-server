@@ -69,12 +69,15 @@ class TrunkStatus extends EventEmitter {
         const name = this.registry.trunkFromEndpoint(e.ObjectName);
         if (name) this.registration.set(name, e.Status);
       }
-      const contacts = await this.ami.action({ Action: 'PJSIPShowContacts' });
+      // Reachability comes from the endpoint list, not the contact list: PJSIPShowContacts only lists registered
+      // contacts, so a trunk with a static contact would never appear there. An endpoint whose device state is
+      // "Unavailable" has no reachable contact (its OPTIONS qualify failed).
+      const endpoints = await this.ami.action({ Action: 'PJSIPShowEndpoints' });
       this.contact.clear();
-      for (const e of contacts.events) {
-        if (e.Event !== 'ContactList') continue;
-        const name = this.registry.trunkFromEndpoint(e.EndpointName);
-        if (name) this.contact.set(name, REACHABLE.has(e.Status) ? 'Reachable' : UNREACHABLE.has(e.Status) ? 'Unreachable' : 'NonQualified');
+      for (const e of endpoints.events) {
+        if (e.Event !== 'EndpointList') continue;
+        const name = this.registry.trunkFromEndpoint(e.ObjectName);
+        if (name) this.contact.set(name, /unavailable/i.test(e.DeviceState || '') ? 'Unreachable' : 'Reachable');
       }
       const chans = await this.ami.action({ Action: 'CoreShowChannels' });
       this.channels.clear();
@@ -102,6 +105,7 @@ class TrunkStatus extends EventEmitter {
       if (reg) return { ...base, state: 'unknown', detail: reg };
       return { ...base, state: 'unknown', detail: 'Waiting for the first registration attempt' };
     }
+    if (!trunk.qualify) return { ...base, state: 'unknown', detail: 'Reachability checking is switched off for this trunk' };
     if (contact === 'Reachable') return { ...base, state: 'online', detail: 'Reachable' };
     if (contact === 'Unreachable') return { ...base, state: 'offline', detail: 'Not answering SIP OPTIONS' };
     return { ...base, state: 'unknown', detail: 'Reachability checking is off or has not run yet' };

@@ -238,6 +238,30 @@ describe('PBX management API', () => {
       assert.equal((await post('/trunks', base)).status, 409);
     });
 
+    test('two trunks cannot accept calls from the same address (inbound calls would be ambiguous)', async () => {
+      const ip = { auth_mode: 'ip', kind: 'pbx' };
+      assert.equal((await post('/trunks', { ...ip, name: 'ipa', display_name: 'A', host: '10.5.5.5' })).status, 201);
+      const clash = await post('/trunks', { ...ip, name: 'ipb', display_name: 'B', host: '10.5.5.5' });
+      assert.equal(clash.status, 409);
+      assert.equal(clash.body.error.code, 'address_in_use');
+      assert.match(clash.body.error.message, /"ipa"/);
+      // an extra match address counts too, in either direction
+      assert.equal((await post('/trunks', { ...ip, name: 'ipc', display_name: 'C', host: '10.5.5.6', match_ips: ['10.5.5.5'] })).status, 409);
+      assert.equal((await post('/trunks', { ...ip, name: 'ipd', display_name: 'D', host: '10.5.5.7' })).status, 201);
+      const d = (await get('/trunks')).body.trunks.find((t) => t.name === 'ipd');
+      assert.equal((await patch(`/trunks/${d.id}`, { match_ips: ['10.5.5.5'] })).status, 409, 'editing into a clash is refused too');
+      assert.equal((await patch(`/trunks/${d.id}`, { host: '10.5.5.8' })).status, 200, 'a trunk does not clash with itself');
+      // two accounts at one provider are told apart by their registered line, so registration trunks may share a host
+      const reg = { auth_mode: 'register', host: 'sip.shared.test', username: 'u', password: 'P4ssword!' };
+      assert.equal((await post('/trunks', { ...reg, name: 'rega', display_name: 'RA' })).status, 201);
+      assert.equal((await post('/trunks', { ...reg, name: 'regb', display_name: 'RB', username: 'u2' })).status, 201);
+      assert.equal((await post('/trunks', { ...ip, name: 'ipe', display_name: 'E', host: 'sip.shared.test' })).status, 409, 'but an IP trunk may not take a registration trunk\'s address');
+      // a disabled trunk does not block its address
+      const a = (await get('/trunks')).body.trunks.find((t) => t.name === 'ipa');
+      await patch(`/trunks/${a.id}`, { enabled: false });
+      assert.equal((await post('/trunks', { ...ip, name: 'ipf', display_name: 'F', host: '10.5.5.5' })).status, 201);
+    });
+
     test('an IP trunk may have no credentials; a default destination must exist', async () => {
       const ok = await post('/trunks', { name: 'gw1', display_name: 'GSM gateway', kind: 'gateway', auth_mode: 'ip', host: '192.168.1.60', match_ips: ['192.168.1.60'], inbound_default: { type: 'extension', value: '1001' } });
       assert.equal(ok.status, 201);

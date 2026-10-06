@@ -1,5 +1,6 @@
 'use strict';
 const crypto = require('node:crypto');
+const { dstContext } = require('./destinations');
 
 // Pure functions: database snapshot in, Asterisk configuration text out. Input has already been
 // validated by strict whitelists (see schemas.js); the asserts below are a second line of defence so
@@ -99,19 +100,13 @@ function renderPjsip({ extensions, trunks }) {
   return `${out.join('\n')}\n`;
 }
 
-/** What a destination does once a call has been routed to it. Always followed by a Hangup by the caller. */
+/** Send the call to a destination's own context (rendered below). */
 function destinationLines(dest, indent = ' same => n,') {
-  if (!dest) return [`${indent}Hangup(21)`];
-  switch (dest.type) {
-    case 'extension':
-      return [`${indent}Gosub(sub-dial-ext,s,1(${assertSafe('extension', dest.value)}))`];
-    case 'echo':
-      return [`${indent}Goto(default,600,1)`];
-    case 'hangup':
-      return [`${indent}Hangup(${HANGUP_CAUSE[dest.value] || 21})`];
-    default:
-      throw new Error(`unknown destination type ${dest.type}`);
+  if (dest && dest.type) {
+    assertSafe('destination type', dest.type);
+    assertSafe('destination value', dest.value);
   }
+  return [`${indent}Goto(${dstContext(dest)},s,1)`];
 }
 
 function dialPattern(p) {
@@ -121,10 +116,90 @@ function dialPattern(p) {
 }
 
 function didPattern(did) {
-  return did === '*' ? '_.' : assertSafe('did', did);
+  return assertSafe('did', did);
 }
 
-function renderDialplan({ extensions, groups, trunks, inbound, outbound }) {
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * One dialplan context per destination ("dst-<type>-<value>", entered with Goto at s,1). Each starts with a hop
+ * counter so a misconfigured loop (time condition -> time condition -> ...) is cut off instead of spinning.
+ */
+function renderDestinations({ extensions, ringGroups, timeConditions }) {
+  const out = ['; ------------------------------------------------------------------ destinations'];
+  const hop = ' same => n,Gosub(sub-hop,s,1)';
+  const ctx = (name, ...lines) => { out.push(`[${name}]`, 'exten => s,1,NoOp(' + name + ')', hop, ...lines, ''); };
+  const goto = (dest, indent = ' same => n,') => destinationLines(dest, indent)[0];
+
+  ctx('dst-echo-0', ' same => n,Goto(default,600,1)');
+  ctx('dst-hangup-reject', ' same => n,Hangup(21)');
+  ctx('dst-hangup-busy', ' same => n,Busy(10)', ' same => n,Hangup(17)');
+  ctx('dst-hangup-congestion', ' same => n,Congestion(10)', ' same => n,Hangup(34)');
+
+  for (const e of extensions) {
+    ctx(`dst-extension-${assertSafe('extension', e.number)}`, ` same => n,Gosub(sub-dial-ext,s,1(${e.number}))`, ' same => n,Hangup()');
+  }
+
+  const rgNumbers = new Set(ringGroups.map((g) => g.number));
+  const known = new Set(extensions.filter((e) => e.enabled).map((e) => e.number));
+  for (const g of ringGroups) {
+    const name = `dst-ringgroup-${assertSafe('ring group', g.number)}`;
+    if (!g.enabled) { ctx(name, ' same => n,Hangup(21)'); continue; }
+    const members = g.members.filter((m) => known.has(m));
+    const secs = Number(g.ring_secs) || 20;
+    const lines = [];
+    if (g.strategy === 'sequential') {
+      members.forEach((m, i) => {
+        lines.push(
+          ` same => n,Gosub(sub-dialstr,s,1(${assertSafe('member', m)},1))`,
+          ` same => n,GotoIf($["\${DIALSTR}" = ""]?m${i}next)`,
+          ` same => n,Dial(\${DIALSTR},${secs})`,
+          ' same => n,GotoIf($["\${DIALSTATUS}" = "ANSWER" | "\${DIALSTATUS}" = "CANCEL"]?done)',
+          ` same => n(m${i}next),NoOp(member ${i} did not answer)`,
+        );
+      });
+    } else {
+      lines.push(' same => n,Set(RG_TARGETS=)');
+      for (const m of members) lines.push(` same => n,Gosub(sub-rg-add,s,1(${assertSafe('member', m)}))`);
+      lines.push(
+        ' same => n,GotoIf($["\${RG_TARGETS}" = ""]?fail)',
+        ` same => n,Dial(\${RG_TARGETS},${secs})`,
+        ' same => n,GotoIf($["\${DIALSTATUS}" = "ANSWER" | "\${DIALSTATUS}" = "CANCEL"]?done)',
+      );
+    }
+    lines.push(' same => n(fail),NoOp(ring group fallback)');
+    lines.push(g.fail_dest ? goto(g.fail_dest) : ' same => n,Hangup(19)');
+    lines.push(' same => n(done),Hangup()');
+    ctx(name, ...lines);
+  }
+  void rgNumbers;
+
+  for (const t of timeConditions) {
+    const name = `dst-timecondition-${Number(t.id)}`;
+    if (!t.enabled) { ctx(name, ' same => n,Hangup(21)'); continue; }
+    const tz = assertSafe('time zone', t.timezone);
+    const lines = [];
+    if (t.override === 'open') lines.push(goto(t.match_dest));
+    else if (t.override === 'closed') lines.push(goto(t.nomatch_dest));
+    else {
+      for (const h of t.holidays) {
+        lines.push(` same => n,GotoIfTime(*,*,${Number(h.day)},${MONTHS[Number(h.month) - 1]},${tz}?closed)`);
+      }
+      for (const r of t.rules) {
+        for (const d of r.days) {
+          lines.push(` same => n,GotoIfTime(${assertSafe('time', r.from)}-${assertSafe('time', r.to)},${assertSafe('day', d)},*,*,${tz}?open)`);
+        }
+      }
+      lines.push(goto(t.nomatch_dest));
+      lines.push(` same => n(open),NoOp(open)`, goto(t.match_dest), ' same => n,Hangup()');
+      lines.push(` same => n(closed),NoOp(closed)`, goto(t.nomatch_dest));
+    }
+    ctx(name, ...lines);
+  }
+  return out;
+}
+
+function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGroups = [], timeConditions = [] }) {
   const out = ['; GENERATED by the backend from the database. Do not edit: changes are overwritten.', ''];
   const enabledExt = extensions.filter((e) => e.enabled);
   const enabledNumbers = new Set(enabledExt.map((e) => e.number));
@@ -148,6 +223,21 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound }) {
   }
   out.push('');
 
+  // Do-not-disturb and forwarding, read by sub-dial-ext / sub-dialstr. Values are dialplan context names.
+  out.push('; Per-extension call handling (do not disturb, forwarding).', '[ext-settings]');
+  for (const e of enabledExt) {
+    const ctx = (d) => (d ? assertSafe('forward destination', dstContext(d)) : '');
+    out.push(
+      `exten => ${e.number},1,Set(X_DND=${e.dnd ? 1 : 0})`,
+      ` same => n,Set(X_FWD_ALL=${ctx(e.fwd_all)})`,
+      ` same => n,Set(X_FWD_BUSY=${ctx(e.fwd_busy)})`,
+      ` same => n,Set(X_FWD_NA=${ctx(e.fwd_noanswer)})`,
+      ` same => n,Set(X_NA_SECS=${Number(e.noanswer_secs) || 25})`,
+      ' same => n,Return()',
+    );
+  }
+  out.push('');
+
   out.push('; Caller id presented by each trunk when neither the route nor the extension sets one.', '[trunk-meta]');
   for (const t of enabledTrunks) {
     out.push(
@@ -161,11 +251,16 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound }) {
   // ------------------------------------------------------------------ internal
   out.push('[default]');
   for (const e of enabledExt) {
-    out.push(`exten => ${e.number},1,Gosub(sub-dial-ext,s,1(${e.number}))`, ' same => n,Hangup()');
+    // userfield remembers what the caller dialled: a Goto into a destination context changes the CDR destination to "s".
+    out.push(`exten => ${e.number},1,Set(CDR(userfield)=to:\${EXTEN})`, ` same => n,Gosub(sub-dial-ext,s,1(${e.number}))`, ' same => n,Hangup()');
   }
   for (const g of groups) {
     if (!g.enabled) continue;
     out.push(`exten => ${g.number},1,Gosub(sub-page,s,1(${g.number}))`, ' same => n,Hangup()');
+  }
+  for (const g of ringGroups) {
+    if (!g.enabled) continue;
+    out.push(`exten => ${assertSafe('ring group number', g.number)},1,Set(CDR(userfield)=to:\${EXTEN})`, ` same => n,Goto(dst-ringgroup-${g.number},s,1)`);
   }
   // Outbound routes: one context per route, included in the order set by the administrator. Asterisk searches
   // included contexts in order and uses the first one with a matching pattern, so "order" really is the
@@ -199,26 +294,32 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound }) {
       const existing = byDid.get(r.did);
       if (!existing || (existing.trunk_id === null && r.trunk_id !== null)) byDid.set(r.did, r);
     }
+    // "*" (any number) is two patterns: numbers that start with a digit, and numbers that start with "+".
+    const patterns = (did) => (did === '*' ? ['_X.', '_+X.'] : [didPattern(did)]);
     for (const r of byDid.values()) {
-      out.push(
-        `; inbound route "${assertSafe('route name', r.name)}"`,
-        `exten => ${didPattern(r.did)},1,NoOp(Inbound ${t.name} -> route ${r.id})`,
-        ' same => n,Set(CDR(userfield)=in:${EXTEN})',
-      );
-      if (r.cid_name_prefix) out.push(` same => n,Set(CALLERID(name)=${assertSafe('prefix', r.cid_name_prefix)} \${CALLERID(name)})`);
-      out.push(...destinationLines(r.destination), ' same => n,Hangup()');
+      out.push(`; inbound route "${assertSafe('route name', r.name)}"`);
+      for (const pattern of patterns(r.did)) {
+        out.push(`exten => ${pattern},1,NoOp(Inbound ${t.name} -> route ${r.id})`, ' same => n,Set(CDR(userfield)=in:${EXTEN})');
+        if (r.cid_name_prefix) out.push(` same => n,Set(CALLERID(name)=${assertSafe('prefix', r.cid_name_prefix)} \${CALLERID(name)})`);
+        out.push(...destinationLines(r.destination), ' same => n,Hangup()');
+      }
     }
     if (!byDid.has('*')) {
-      out.push(
-        '; unmatched inbound calls',
-        'exten => _.,1,NoOp(Inbound call on ${EXTEN} from ${CALLERID(num)} matched no route)',
-        ' same => n,Set(CDR(userfield)=in:${EXTEN}:unrouted)',
-      );
-      out.push(...destinationLines(t.inbound_default), ' same => n,Hangup(1)');
+      out.push('; unmatched inbound calls');
+      for (const pattern of patterns('*')) {
+        out.push(
+          `exten => ${pattern},1,NoOp(Inbound call on \${EXTEN} from \${CALLERID(num)} matched no route)`,
+          ' same => n,Set(CDR(userfield)=in:${EXTEN}:unrouted)',
+          ...destinationLines(t.inbound_default),
+          ' same => n,Hangup(1)',
+        );
+      }
     }
     out.push('');
   }
   if (!enabledTrunks.length) out.push('; no trunks configured', '');
+
+  out.push(...renderDestinations({ extensions, ringGroups, timeConditions }));
 
   return `${out.join('\n')}\n`;
 }
@@ -226,8 +327,8 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound }) {
 function renderAll(snapshot) {
   const pjsip = renderPjsip(snapshot);
   const dialplan = renderDialplan(snapshot);
-  const checksum = crypto.createHash('sha256').update(pjsip).update('\0').update(dialplan).digest('hex');
-  return { pjsip, dialplan, checksum };
+  const sha = (...parts) => { const h = crypto.createHash('sha256'); for (const p of parts) h.update(p).update('\0'); return h.digest('hex'); };
+  return { pjsip, dialplan, checksum: sha(pjsip, dialplan), pjsipChecksum: sha(pjsip), dialplanChecksum: sha(dialplan) };
 }
 
 module.exports = { renderPjsip, renderDialplan, renderAll, endpointName };

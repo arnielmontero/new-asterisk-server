@@ -89,7 +89,7 @@ describe('dialplan rendering', () => {
 
   test('extensions, enabled paging groups and member lists', () => {
     const out = renderDialplan(snap({ extensions: [ext(), ext({ number: '1002' }), ext({ number: '1003', enabled: false })], groups }));
-    assert.match(out, /exten => 1001,1,Gosub\(sub-dial-ext,s,1\(1001\)\)/);
+    assert.match(out, /exten => 1001,1,Set\(CDR\(userfield\)=to:\$\{EXTEN\}\)\n same => n,Gosub\(sub-dial-ext,s,1\(1001\)\)/);
     assert.ok(!out.includes('exten => 1003,1'), 'disabled extension is not dialable');
     assert.match(out, /exten => 700,1,Set\(MEMBERS=1001-1002\)/, 'disabled members are left out');
     assert.match(out, /exten => 700,1,Gosub\(sub-page,s,1\(700\)\)/);
@@ -140,13 +140,13 @@ describe('dialplan rendering', () => {
     }));
     const acme = out.slice(out.indexOf('[from-trunk-acme]'), out.indexOf('[from-trunk-gw]'));
     const gw = out.slice(out.indexOf('[from-trunk-gw]'));
-    assert.match(acme, /exten => 5551234,1[\s\S]*Set\(CDR\(userfield\)=in:\$\{EXTEN\}\)[\s\S]*Set\(CALLERID\(name\)=Sales \$\{CALLERID\(name\)\}\)[\s\S]*Gosub\(sub-dial-ext,s,1\(1001\)\)/);
-    assert.match(acme, /exten => 5559999,1[\s\S]*Hangup\(17\)/);
-    assert.match(acme, /exten => _\.,1[\s\S]*Hangup\(21\)/, 'no default: reject');
+    assert.match(acme, /exten => 5551234,1[\s\S]*Set\(CDR\(userfield\)=in:\$\{EXTEN\}\)[\s\S]*Set\(CALLERID\(name\)=Sales \$\{CALLERID\(name\)\}\)[\s\S]*Goto\(dst-extension-1001,s,1\)/);
+    assert.match(acme, /exten => 5559999,1[\s\S]*Goto\(dst-hangup-busy,s,1\)/);
+    assert.match(acme, /exten => _X.,1[\s\S]*Goto\(dst-hangup-reject,s,1\)/, 'no default: reject');
     assert.ok(!acme.includes('5550000'));
-    assert.match(gw, /exten => 5551234,1[\s\S]*Goto\(default,600,1\)/, 'route bound to this trunk wins');
+    assert.match(gw, /exten => 5551234,1[\s\S]*Goto\(dst-echo-0,s,1\)/, 'route bound to this trunk wins');
     assert.ok(!gw.includes('5559999'), 'route for another trunk does not leak');
-    assert.match(gw, /exten => _\.,1[\s\S]*Gosub\(sub-dial-ext,s,1\(1002\)\)/, 'trunk default destination');
+    assert.match(gw, /exten => _X.,1[\s\S]*Goto\(dst-extension-1002,s,1\)/, 'trunk default destination');
   });
 
   test('a catch-all (*) route replaces the generated default', () => {
@@ -154,7 +154,8 @@ describe('dialplan rendering', () => {
       trunks: [trunk()],
       inbound: [{ id: 1, name: 'Any', did: '*', trunk_id: null, enabled: true, destination: { type: 'echo', value: '' }, cid_name_prefix: null }],
     }));
-    assert.equal((out.match(/exten => _\.,1/g) || []).length, 1);
+    assert.equal((out.match(/exten => _X.,1/g) || []).length, 1);
+    assert.equal((out.match(/exten => _+X.,1/g) || []).length, 1, 'numbers starting with + are covered too');
     assert.ok(!out.includes('matched no route'));
   });
 

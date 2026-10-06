@@ -2,6 +2,7 @@
 const crypto = require('node:crypto');
 const { conflict, notFound, badRequest } = require('../errors');
 const { RESERVED_NUMBERS, trunkRules } = require('./schemas');
+const destinations = require('./destinations');
 
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 
@@ -24,6 +25,11 @@ const publicExtension = (r) => ({
   enabled: r.enabled,
   notes: r.notes,
   user: r.username || null,
+  dnd: r.dnd,
+  fwd_all: r.fwd_all || null,
+  fwd_busy: r.fwd_busy || null,
+  fwd_noanswer: r.fwd_noanswer || null,
+  noanswer_secs: r.noanswer_secs,
   created_at: r.created_at,
   updated_at: r.updated_at,
 });
@@ -46,12 +52,14 @@ class PbxStore {
   }
 
   /** A number may be an extension, a paging group, or reserved, never two of them. */
-  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null } = {}) {
+  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null, exceptRingGroupId = null } = {}) {
     if (RESERVED_NUMBERS.has(number)) throw conflict(`${number} is reserved (echo test)`, 'number_reserved');
     const e = (await this.db.query('SELECT id FROM extensions WHERE number = $1', [number])).rows[0];
     if (e && Number(e.id) !== exceptExtensionId) throw conflict(`${number} is already an extension`, 'number_in_use');
     const g = (await this.db.query('SELECT id FROM paging_groups WHERE number = $1', [number])).rows[0];
     if (g && Number(g.id) !== exceptGroupId) throw conflict(`${number} is already a paging group`, 'number_in_use');
+    const rg = (await this.db.query('SELECT id FROM ring_groups WHERE number = $1', [number])).rows[0];
+    if (rg && Number(rg.id) !== exceptRingGroupId) throw conflict(`${number} is already a ring group`, 'number_in_use');
   }
 
   // --------------------------------------------------------------- extensions
@@ -101,11 +109,15 @@ class PbxStore {
   }
 
   async updateExtension(id, patch) {
-    await this.getExtension(id);
+    const current = await this.getExtension(id);
     const sets = [];
     const params = [];
     for (const [key, value] of Object.entries(patch)) {
-      params.push(value);
+      if (['fwd_all', 'fwd_busy', 'fwd_noanswer'].includes(key) && value) {
+        if (value.type === 'extension' && value.value === current.number) throw badRequest('An extension cannot forward to itself', 'bad_destination');
+        await destinations.assertValid(this.db, value);
+      }
+      params.push(['fwd_all', 'fwd_busy', 'fwd_noanswer'].includes(key) && value ? JSON.stringify(value) : value);
       sets.push(`${key} = $${params.length}`);
     }
     params.push(id);
@@ -126,13 +138,7 @@ class PbxStore {
 
   async deleteExtension(id) {
     const ext = await this.getExtension(id);
-    const usedIn = [];
-    const inbound = (await this.db.query(
-      `SELECT name FROM inbound_routes WHERE dest_type = 'extension' AND dest_value = $1`, [ext.number])).rows;
-    for (const r of inbound) usedIn.push(`inbound route "${r.name}"`);
-    const trunks = (await this.db.query(
-      `SELECT name FROM trunks WHERE inbound_default->>'type' = 'extension' AND inbound_default->>'value' = $1`, [ext.number])).rows;
-    for (const t of trunks) usedIn.push(`trunk "${t.name}" default destination`);
+    const usedIn = await destinations.references(this.db, 'extension', ext.number, { exclude: `extension:${ext.number}` });
     if (usedIn.length) throw conflict(`Extension ${ext.number} is still used by: ${usedIn.join(', ')}`, 'in_use');
     await this.db.query('DELETE FROM extensions WHERE id = $1', [id]);
     return ext;
@@ -236,8 +242,29 @@ class PbxStore {
     if (!r) throw badRequest(`Extension ${number} does not exist`, 'unknown_extension');
   }
 
+  /**
+   * Inbound calls are matched to a trunk by source address. Two enabled trunks that accept the same address (and are
+   * not both registration trunks, which are told apart by their registered line) would be ambiguous: whichever Asterisk
+   * loaded first would get the call. Refuse that instead of letting calls land in the wrong trunk's routes.
+   */
+  async assertNoAddressClash(trunk, exceptId = null) {
+    if (!trunk.enabled) return;
+    const mine = new Set([trunk.host, ...(trunk.match_ips || [])].map((a) => String(a).toLowerCase()));
+    const others = (await this.db.query('SELECT id, name, auth_mode, host, match_ips FROM trunks WHERE enabled')).rows;
+    for (const o of others) {
+      if (exceptId !== null && Number(o.id) === exceptId) continue;
+      if (trunk.auth_mode === 'register' && o.auth_mode === 'register') continue;
+      const theirs = [o.host, ...(o.match_ips || [])].map((a) => String(a).toLowerCase());
+      const shared = theirs.find((a) => mine.has(a));
+      if (shared) {
+        throw conflict(`Trunk "${o.name}" already accepts calls from ${shared}: two trunks cannot share an address, because inbound calls could not be told apart`, 'address_in_use');
+      }
+    }
+  }
+
   async createTrunk(data) {
     this.assertTrunkValid(data);
+    await this.assertNoAddressClash(data);
     await this.assertInboundDefault(data.inbound_default);
     try {
       const { rows } = await this.db.query(
@@ -262,6 +289,7 @@ class PbxStore {
     // An empty/omitted password keeps the stored one.
     if (patch.password === undefined || patch.password === null) next.password = current.password;
     this.assertTrunkValid(next);
+    await this.assertNoAddressClash(next, id);
     if (patch.inbound_default !== undefined) await this.assertInboundDefault(patch.inbound_default);
     const sets = [];
     const params = [];
@@ -305,10 +333,7 @@ class PbxStore {
   }
 
   async assertDestination(dest) {
-    if (dest.type === 'extension') await this.assertExtensionExists(dest.value);
-    if (dest.type === 'hangup' && !['', 'busy', 'congestion', 'reject'].includes(dest.value)) {
-      throw badRequest('Hangup destination must be busy, congestion or reject', 'bad_destination');
-    }
+    await destinations.assertValid(this.db, dest);
   }
 
   async createInbound(data) {
@@ -434,6 +459,151 @@ class PbxStore {
     return r;
   }
 
+  // --------------------------------------------------------------- ring groups
+  async listRingGroups() {
+    const { rows } = await this.db.query(
+      `SELECT g.*, COALESCE(array_agg(e.number ORDER BY m.position) FILTER (WHERE e.id IS NOT NULL), '{}') AS members
+       FROM ring_groups g
+       LEFT JOIN ring_group_members m ON m.group_id = g.id
+       LEFT JOIN extensions e ON e.id = m.extension_id
+       GROUP BY g.id ORDER BY g.number`,
+    );
+    return rows.map((r) => ({
+      id: Number(r.id), number: r.number, name: r.name, strategy: r.strategy, ring_secs: r.ring_secs,
+      fail_dest: r.fail_dest || null, enabled: r.enabled, members: r.members,
+    }));
+  }
+
+  async getRingGroup(id) {
+    const g = (await this.listRingGroups()).find((x) => x.id === id);
+    if (!g) throw notFound('Ring group not found');
+    return g;
+  }
+
+  async setRingMembers(client, groupId, members) {
+    await client.query('DELETE FROM ring_group_members WHERE group_id = $1', [groupId]);
+    const unique = [...new Set(members)];
+    const found = (await client.query('SELECT id, number FROM extensions WHERE number = ANY($1::text[])', [unique])).rows;
+    if (found.length !== unique.length) {
+      const known = new Set(found.map((r) => r.number));
+      throw badRequest(`Unknown extension(s): ${unique.filter((n) => !known.has(n)).join(', ')}`, 'unknown_extension');
+    }
+    const byNumber = new Map(found.map((r) => [r.number, r.id]));
+    let pos = 0;
+    for (const number of unique) {
+      await client.query('INSERT INTO ring_group_members (group_id, extension_id, position) VALUES ($1,$2,$3)', [groupId, byNumber.get(number), pos]);
+      pos += 1;
+    }
+  }
+
+  async createRingGroup(data) {
+    await this.assertNumberFree(data.number);
+    await destinations.assertValid(this.db, data.fail_dest);
+    const id = await this.db.tx(async (c) => {
+      const { rows } = await c.query(
+        `INSERT INTO ring_groups (number, name, strategy, ring_secs, fail_dest, enabled) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+        [data.number, data.name, data.strategy, data.ring_secs, data.fail_dest ? JSON.stringify(data.fail_dest) : null, data.enabled],
+      );
+      await this.setRingMembers(c, rows[0].id, data.members);
+      return Number(rows[0].id);
+    });
+    return this.getRingGroup(id);
+  }
+
+  async updateRingGroup(id, patch) {
+    const current = await this.getRingGroup(id);
+    if (patch.fail_dest) {
+      if (patch.fail_dest.type === 'ringgroup' && patch.fail_dest.value === current.number) throw badRequest('A ring group cannot fall back to itself', 'bad_destination');
+      await destinations.assertValid(this.db, patch.fail_dest);
+    }
+    await this.db.tx(async (c) => {
+      const sets = [];
+      const params = [];
+      for (const key of ['name', 'strategy', 'ring_secs', 'enabled']) {
+        if (patch[key] !== undefined) { params.push(patch[key]); sets.push(`${key} = $${params.length}`); }
+      }
+      if (patch.fail_dest !== undefined) { params.push(patch.fail_dest ? JSON.stringify(patch.fail_dest) : null); sets.push(`fail_dest = $${params.length}`); }
+      if (sets.length) {
+        params.push(id);
+        await c.query(`UPDATE ring_groups SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+      }
+      if (patch.members) await this.setRingMembers(c, id, patch.members);
+    });
+    return this.getRingGroup(id);
+  }
+
+  async deleteRingGroup(id) {
+    const g = await this.getRingGroup(id);
+    const usedIn = await destinations.references(this.db, 'ringgroup', g.number, { exclude: `ringgroup:${g.number}` });
+    if (usedIn.length) throw conflict(`Ring group ${g.number} is still used by: ${usedIn.join(', ')}`, 'in_use');
+    await this.db.query('DELETE FROM ring_groups WHERE id = $1', [id]);
+    return g;
+  }
+
+  // ---------------------------------------------------------- time conditions
+  async listTimeConditions() {
+    const { rows } = await this.db.query('SELECT * FROM time_conditions ORDER BY name');
+    return rows.map((r) => ({
+      id: Number(r.id), name: r.name, timezone: r.timezone, rules: r.rules, holidays: r.holidays,
+      match_dest: r.match_dest, nomatch_dest: r.nomatch_dest, override: r.override, enabled: r.enabled,
+    }));
+  }
+
+  async getTimeCondition(id) {
+    const t = (await this.listTimeConditions()).find((x) => x.id === id);
+    if (!t) throw notFound('Time condition not found');
+    return t;
+  }
+
+  async createTimeCondition(data) {
+    await destinations.assertValid(this.db, data.match_dest);
+    await destinations.assertValid(this.db, data.nomatch_dest);
+    try {
+      const { rows } = await this.db.query(
+        `INSERT INTO time_conditions (name, timezone, rules, holidays, match_dest, nomatch_dest, override, enabled)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        [data.name, data.timezone, JSON.stringify(data.rules), JSON.stringify(data.holidays), JSON.stringify(data.match_dest),
+          JSON.stringify(data.nomatch_dest), data.override, data.enabled],
+      );
+      return this.getTimeCondition(Number(rows[0].id));
+    } catch (err) {
+      if (err.code === '23505') throw conflict('A time condition with that name already exists', 'duplicate');
+      throw err;
+    }
+  }
+
+  async updateTimeCondition(id, patch) {
+    await this.getTimeCondition(id);
+    for (const key of ['match_dest', 'nomatch_dest']) {
+      if (patch[key]) {
+        if (patch[key].type === 'timecondition' && patch[key].value === String(id)) throw badRequest('A time condition cannot route to itself', 'bad_destination');
+        await destinations.assertValid(this.db, patch[key]);
+      }
+    }
+    const sets = [];
+    const params = [];
+    for (const [key, value] of Object.entries(patch)) {
+      params.push(['rules', 'holidays', 'match_dest', 'nomatch_dest'].includes(key) ? JSON.stringify(value) : value);
+      sets.push(`${key} = $${params.length}`);
+    }
+    params.push(id);
+    try {
+      await this.db.query(`UPDATE time_conditions SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+    } catch (err) {
+      if (err.code === '23505') throw conflict('A time condition with that name already exists', 'duplicate');
+      throw err;
+    }
+    return this.getTimeCondition(id);
+  }
+
+  async deleteTimeCondition(id) {
+    const t = await this.getTimeCondition(id);
+    const usedIn = await destinations.references(this.db, 'timecondition', String(id), { exclude: `timecondition:${id}` });
+    if (usedIn.length) throw conflict(`Time condition "${t.name}" is still used by: ${usedIn.join(', ')}`, 'in_use');
+    await this.db.query('DELETE FROM time_conditions WHERE id = $1', [id]);
+    return t;
+  }
+
   // ---------------------------------------------------------------- bootstrap
   /**
    * The two seeded extensions get their credentials from the environment on the first start so an existing
@@ -458,7 +628,9 @@ class PbxStore {
     const inbound = (await this.db.query(
       `SELECT r.*, t.name AS trunk_name FROM inbound_routes r LEFT JOIN trunks t ON t.id = r.trunk_id ORDER BY r.id`)).rows;
     const outbound = await this.listOutbound();
-    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound };
+    const ringGroups = await this.listRingGroups();
+    const timeConditions = await this.listTimeConditions();
+    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound, ringGroups, timeConditions };
   }
 }
 

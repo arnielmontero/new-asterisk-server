@@ -33,6 +33,8 @@ class ConfigApplier extends EventEmitter {
     this.last = null; // last result
     this.checksum = null; // checksum of the files currently on disk
     this.reloadedChecksum = null; // checksum Asterisk last confirmed loading
+    this.sums = { pjsip: null, dialplan: null }; // per-file checksums on disk
+    this.loaded = { pjsip: null, dialplan: null }; // per-file checksums Asterisk last confirmed loading
 
     ami.on('connected', () => {
       if (this.checksum && this.reloadedChecksum !== this.checksum) this.schedule('ami-connected');
@@ -76,19 +78,38 @@ class ConfigApplier extends EventEmitter {
       this.registry.load(snapshot);
       const rendered = renderAll(snapshot);
       const changed = rendered.checksum !== this.checksum;
-      if (changed) await this.writeFiles(rendered);
+      if (changed) {
+        await this.writeFiles(rendered, {
+          pjsip: rendered.pjsipChecksum !== this.sums.pjsip,
+          dialplan: rendered.dialplanChecksum !== this.sums.dialplan,
+        });
+      }
       this.checksum = rendered.checksum;
+      this.sums = { pjsip: rendered.pjsipChecksum, dialplan: rendered.dialplanChecksum };
 
+      // Only what changed is reloaded: a dialplan-only edit (do not disturb, a route ...) never touches SIP
+      // registrations or trunk state.
+      const needPjsip = force || this.loaded.pjsip !== rendered.pjsipChecksum;
+      const needDialplan = force || this.loaded.dialplan !== rendered.dialplanChecksum;
       let reloaded = false;
-      if (this.ami.isConnected() && (changed || force || this.reloadedChecksum !== rendered.checksum)) {
-        await this.reload();
+      if (this.ami.isConnected() && (needPjsip || needDialplan)) {
+        if (needPjsip) {
+          await this.reloadPjsip();
+          this.loaded.pjsip = rendered.pjsipChecksum;
+        }
+        if (needDialplan) {
+          await this.reloadDialplan();
+          this.loaded.dialplan = rendered.dialplanChecksum;
+        }
         this.reloadedChecksum = rendered.checksum;
         reloaded = true;
-        await this.qualifyTrunks(snapshot.trunks);
-        try {
-          await this.onReloaded?.();
-        } catch (err) {
-          this.logger.warn({ err: err.message }, 'post-reload refresh failed');
+        if (needPjsip) {
+          await this.qualifyTrunks(snapshot.trunks);
+          try {
+            await this.onReloaded?.();
+          } catch (err) {
+            this.logger.warn({ err: err.message }, 'post-reload refresh failed');
+          }
         }
       }
       result = { ok: true, reason, checksum: rendered.checksum, changed, reloaded, at: startedAt, error: null };
@@ -105,7 +126,7 @@ class ConfigApplier extends EventEmitter {
     return result;
   }
 
-  async writeFiles({ pjsip, dialplan }) {
+  async writeFiles({ pjsip, dialplan }, which = { pjsip: true, dialplan: true }) {
     await fs.mkdir(this.dir, { recursive: true });
     const write = async (name, content) => {
       const target = path.join(this.dir, name);
@@ -114,8 +135,8 @@ class ConfigApplier extends EventEmitter {
       await fs.rename(tmp, target);
     };
     // Dialplan first: a new PJSIP object is only reachable through the dialplan that references it.
-    await write(FILES.dialplan, dialplan);
-    await write(FILES.pjsip, pjsip);
+    if (which.dialplan) await write(FILES.dialplan, dialplan);
+    if (which.pjsip) await write(FILES.pjsip, pjsip);
   }
 
   async command(cmd) {
@@ -136,9 +157,12 @@ class ConfigApplier extends EventEmitter {
     }
   }
 
-  async reload() {
+  async reloadPjsip() {
     const pj = await this.command('module reload res_pjsip.so');
     if (/failed|error|not found|unable/i.test(pj) && !/reloaded successfully/i.test(pj)) throw new Error(`PJSIP reload failed: ${pj.trim().slice(0, 300)}`);
+  }
+
+  async reloadDialplan() {
     const dp = await this.command('dialplan reload');
     if (/failed|error|unable/i.test(dp)) throw new Error(`Dialplan reload failed: ${dp.trim().slice(0, 300)}`);
   }

@@ -187,10 +187,16 @@ marked done.
 - [x] **Verified:** 222 backend tests (up from 143); 9 browser tests building everything through the UI and placing a real call out through a trunk and back in with a measured echo tone (`tests/e2e/admin-pbx.test.js`); the original 18 browser tests, 57 stack checks, 16 backup/restore, 6 resilience and 48 Windows-phone end-to-end checks all still pass
 - Defects found by testing: chained `validate()` middlewares dropped route params (500s); two outbound routes with the same pattern silently shadowed each other (fixed with per-route contexts included in order); trunk "unavailable" state wrongly skipped usable trunks; a new trunk could take a minute to show ONLINE (now qualified immediately); inline `style` attributes violate the CSP (charts use the CSS object model)
 
-### Phase B — IVR, ring groups, queues, voicemail, recordings (not started)
-- [ ] Time conditions (business hours / holidays) as inbound destinations
-- [ ] IVR menus (prompt, digit options, timeout, invalid), ring groups (ring-all / sequential), call queues with agents, voicemail with in-browser listening and optional e-mail, call forwarding and do-not-disturb per extension
-- [ ] Call recording (MixMonitor) with in-browser playback, retention, access control
+### Phase B — call flow (in progress)
+#### B1 — ring groups, time conditions, forwarding, do not disturb (done 2026-10-06)
+- [x] One destination model for everything that routes a call (extension, ring group, time condition, echo, reject); one dialplan context per destination; hop counter against loops; deleting something that is still used is refused and lists the users
+- [x] Ring groups (ring all / sequential, per-member order, fallback), time conditions (open periods per day, holidays, time zone, manual override), per-extension DND and forward all / busy / no answer, self-service on the dashboard
+- [x] Reload only what changed (a dialplan-only change never touches PJSIP); trunk status read from the endpoint list (a trunk now shows ONLINE in seconds); two trunks cannot share an address
+- [x] **Verified:** 244 backend tests; 10 real-browser scenarios (`tests/e2e/callflow.test.js`: DND, forwarding, ring-all, sequential, DND skipping, time condition via an inbound trunk call with overrides and a holiday); earlier browser suites re-run
+- Defects found by testing: CDR destination became `s` after a Goto into a destination context (the dialled number is now kept); `PJSIPShowContacts` answers "No Contacts found" for trunks, which wiped trunk reachability; two IP trunks with the same address made inbound calls land in the wrong trunk's routes
+#### B2 — audio prompts, announcements, IVR menus (not started)
+#### B3 — call queues with agents (not started)
+#### B4 — voicemail and call recording (not started)
 
 ### Phase C — Conferencing, parking, transfer, presence (not started)
 - [ ] Conference rooms, call parking, attended and blind transfer, busy-lamp presence for every extension, call pickup

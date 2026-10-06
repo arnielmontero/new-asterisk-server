@@ -53,6 +53,16 @@ describe('call detail records', () => {
     assert.equal(byDir.internal.disposition, 'ANSWERED');
   });
 
+  test('internal calls keep what the caller dialled even after a Goto into a destination context', async () => {
+    await ingest({ UniqueID: 'goto.1', Source: '1001', Destination: 's', UserField: 'to:800', DestinationChannel: 'PJSIP/1002-goto' });
+    await ingest({ UniqueID: 'goto.2', Source: '1001', Destination: 'h', UserField: 'to:800', DestinationChannel: '' });
+    await ingest({ UniqueID: 'goto.3', Source: '1001', Destination: '1002', UserField: 'to:800', DestinationChannel: 'PJSIP/1002-goto3' });
+    const dst = async (id) => (await h.db.query('SELECT dst FROM cdr WHERE unique_id = $1', [id])).rows[0].dst;
+    assert.equal(await dst('goto.1'), '800');
+    assert.equal(await dst('goto.2'), '800');
+    assert.equal(await dst('goto.3'), '1002', 'a real destination from Asterisk is kept');
+  });
+
   test('duplicate events do not create duplicate rows; events without a start time are ignored', async () => {
     const e = cdrEvent({ UniqueID: 'dup.1', DestinationChannel: 'PJSIP/1002-dup' });
     await h.cdr.ingest(e);
@@ -171,7 +181,9 @@ describe('trunk status', () => {
 
   test('registration, reachability and channel counts come from real AMI data', async () => {
     h.ami.responses.set('PJSIPShowRegistrationsOutbound', { response: 'Success', fields: {}, events: [{ Event: 'OutboundRegistrationDetail', ObjectName: 'trk-acme', Status: 'Registered' }] });
-    h.ami.responses.set('PJSIPShowContacts', { response: 'Success', fields: {}, events: [{ Event: 'ContactList', EndpointName: 'trk-gw', Status: 'Unreachable' }] });
+    // (PJSIPShowContacts is useless for trunks: it answers "No Contacts found" for static contacts.)
+    h.ami.responses.set('PJSIPShowContacts', { response: 'Error', message: 'No Contacts found', fields: {}, events: [] });
+    h.ami.responses.set('PJSIPShowEndpoints', { response: 'Success', fields: {}, events: [{ Event: 'EndpointList', ObjectName: 'trk-gw', DeviceState: 'Unavailable' }, { Event: 'EndpointList', ObjectName: '1001', DeviceState: 'Not in use' }] });
     h.ami.responses.set('CoreShowChannels', { response: 'Success', fields: {}, events: [{ Event: 'CoreShowChannel', Channel: 'PJSIP/trk-acme-0000000a' }, { Event: 'CoreShowChannel', Channel: 'PJSIP/1001-0000000b' }] });
     await h.trunkStatus.refresh();
     assert.equal(state('acme').state, 'online');
@@ -190,6 +202,26 @@ describe('trunk status', () => {
     h.ami.emit('event', { Event: 'ContactStatus', EndpointName: 'trk-gw', ContactStatus: 'Reachable' });
     assert.equal(state('gw').state, 'online');
     assert.equal(seen.length, 1);
+  });
+
+  test('an endpoint that is "Not in use" is reachable; one with reachability checking off is never claimed to be', async () => {
+    h.ami.responses.set('PJSIPShowEndpoints', { response: 'Success', fields: {}, events: [{ Event: 'EndpointList', ObjectName: 'trk-gw', DeviceState: 'Not in use' }] });
+    await h.trunkStatus.refresh();
+    assert.equal(state('gw').state, 'online');
+    h.registry.load({
+      extensions: [], groups: [],
+      trunks: [{ id: 2, name: 'gw', display_name: 'GW', auth_mode: 'ip', host: 'y', enabled: true, qualify: false }],
+    });
+    assert.equal(state('gw').state, 'unknown');
+    assert.match(state('gw').detail, /switched off/);
+    h.registry.load({
+      extensions: [], groups: [],
+      trunks: [
+        { id: 1, name: 'acme', display_name: 'Acme', auth_mode: 'register', host: 'x', enabled: true },
+        { id: 2, name: 'gw', display_name: 'GW', auth_mode: 'ip', host: 'y', enabled: true },
+        { id: 3, name: 'off', display_name: 'Off', auth_mode: 'ip', host: 'z', enabled: false },
+      ],
+    });
   });
 
   test('nothing is guessed while AMI is down', async () => {

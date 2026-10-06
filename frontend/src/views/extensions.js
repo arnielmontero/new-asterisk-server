@@ -1,7 +1,7 @@
 import { h, mount } from '../dom.js';
 import { api, describeError } from '../api.js';
 import { store } from '../store.js';
-import { field, check, dataTable, openDialog, nullIfEmpty, copyText, stateBadge } from './common.js';
+import { field, check, dataTable, openDialog, nullIfEmpty, copyText, stateBadge, loadDestinationData, destinationPicker } from './common.js';
 
 const STATE_CLASS = { Online: 'online', Offline: 'offline', 'In-Call': 'incall', Paging: 'paging', Unknown: 'unknown' };
 
@@ -12,6 +12,7 @@ export function extensionsView() {
   let extensions = [];
   let groups = [];
   let sipDomain = '';
+  let destData = { extensions: [], ringGroups: [], timeConditions: [] };
 
   const unsubscribe = store.subscribe(() => { if (extensions.length) renderExtensions(); });
 
@@ -21,6 +22,7 @@ export function extensionsView() {
       extensions = e.extensions;
       sipDomain = e.sipDomain;
       groups = g.groups;
+      destData = await loadDestinationData();
       renderExtensions();
       renderGroups();
     } catch (err) {
@@ -50,7 +52,9 @@ export function extensionsView() {
             x.display_name,
             x.enabled ? (st ? stateBadge(STATE_CLASS[st] || 'unknown', st) : '—') : stateBadge('offline', 'Disabled'),
             [x.webrtc_enabled ? 'browser' : null, x.phone_enabled ? 'phone' : null].filter(Boolean).join(' + ') || 'none',
-            x.allow_outbound ? (x.outbound_cid ? `allowed (CID ${x.outbound_cid})` : 'allowed') : 'internal only',
+            h('div', null, x.allow_outbound ? (x.outbound_cid ? `allowed (CID ${x.outbound_cid})` : 'allowed') : 'internal only',
+              x.dnd ? h('div', null, stateBadge('incall', 'DO NOT DISTURB')) : null,
+              x.fwd_all ? h('div', { class: 'muted small' }, `forwards all → ${x.fwd_all.value || x.fwd_all.type}`) : null),
             x.user || '—',
             h('div', { class: 'row-actions' },
               h('button', { class: 'btn small', onclick: () => editExtension(x) }, 'Edit'),
@@ -77,7 +81,13 @@ export function extensionsView() {
           phone: h('input', { type: 'checkbox', checked: x ? x.phone_enabled : true }),
           outbound: h('input', { type: 'checkbox', checked: x ? x.allow_outbound : false }),
           enabled: h('input', { type: 'checkbox', checked: x ? x.enabled : true }),
+          dnd: h('input', { type: 'checkbox', checked: x ? x.dnd : false }),
+          secs: h('input', { type: 'number', min: 5, max: 120, value: x?.noanswer_secs || 25 }),
         };
+        const own = x ? `extension:${x.number}` : null;
+        const fwdAll = destinationPicker(destData, { value: x?.fwd_all, allowNone: true, noneLabel: 'No forwarding', exclude: own });
+        const fwdBusy = destinationPicker(destData, { value: x?.fwd_busy, allowNone: true, noneLabel: 'Busy signal', exclude: own });
+        const fwdNa = destinationPicker(destData, { value: x?.fwd_noanswer, allowNone: true, noneLabel: 'Hang up', exclude: own });
         return h('form', {
           class: 'stack',
           onsubmit: async (e) => {
@@ -91,6 +101,9 @@ export function extensionsView() {
               enabled: f.enabled.checked,
               notes: nullIfEmpty(f.notes.value),
             };
+            if (!creating) {
+              Object.assign(body, { dnd: f.dnd.checked, noanswer_secs: Number(f.secs.value) || 25, fwd_all: fwdAll.get(), fwd_busy: fwdBusy.get(), fwd_noanswer: fwdNa.get() });
+            }
             try {
               if (creating) {
                 const res = await api('POST', '/pbx/extensions', { number: f.number.value.trim(), ...body });
@@ -114,6 +127,13 @@ export function extensionsView() {
         check(f.outbound, 'May place outbound calls', '(through trunks; off = internal calls only)'),
         field('Outbound caller ID', f.cid, 'Number shown to the called party. Leave empty to use the route or trunk default.'),
         field('Notes', f.notes),
+        creating ? null : h('details', null, h('summary', null, 'Do not disturb and call forwarding'),
+          h('div', { class: 'stack' },
+            check(f.dnd, 'Do not disturb', '(callers hear busy or follow the "when busy" setting)'),
+            field('Forward all calls to', fwdAll.el),
+            field('When busy, forward to', fwdBusy.el),
+            field('When no answer or not reachable, forward to', fwdNa.el),
+            field('Ring for (seconds) before "no answer"', f.secs))),
         check(f.enabled, 'Enabled'),
         h('div', { class: 'actions' },
           h('button', { class: 'btn primary', type: 'submit' }, creating ? 'Create extension' : 'Save'),

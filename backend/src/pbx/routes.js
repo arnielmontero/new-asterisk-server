@@ -211,6 +211,74 @@ function pbxRoutes({ store, applier, trunkStatus, audit, config }) {
     res.json({ status: 'deleted' });
   });
 
+  // --------------------------------------------------------------- ring groups
+  router.get('/ring-groups', async (_req, res) => {
+    res.json({ groups: await store.listRingGroups() });
+  });
+
+  router.post('/ring-groups', validate({ body: schemas.createRingGroup }), async (req, res) => {
+    try {
+      const g = await store.createRingGroup(req.valid.body);
+      await record(req, 'pbx.ring_group.create', g.number, { name: g.name, strategy: g.strategy, members: g.members });
+      changed('ring_group.create');
+      res.status(201).json({ group: g });
+    } catch (err) {
+      await record(req, 'pbx.ring_group.create', req.valid.body.number, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  router.patch('/ring-groups/:id', validate({ params: schemas.idParam, body: schemas.patchRingGroup }), async (req, res) => {
+    const g = await store.updateRingGroup(req.valid.params.id, req.valid.body);
+    await record(req, 'pbx.ring_group.update', g.number, { fields: Object.keys(req.valid.body) });
+    changed('ring_group.update');
+    res.json({ group: g });
+  });
+
+  router.delete('/ring-groups/:id', id, async (req, res) => {
+    try {
+      const g = await store.deleteRingGroup(req.valid.params.id);
+      await record(req, 'pbx.ring_group.delete', g.number);
+      changed('ring_group.delete');
+      res.json({ status: 'deleted', number: g.number });
+    } catch (err) {
+      await record(req, 'pbx.ring_group.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  // ----------------------------------------------------------- time conditions
+  router.get('/time-conditions', async (_req, res) => {
+    res.json({ conditions: await store.listTimeConditions() });
+  });
+
+  router.post('/time-conditions', validate({ body: schemas.createTimeCondition }), async (req, res) => {
+    const t = await store.createTimeCondition(req.valid.body);
+    await record(req, 'pbx.time_condition.create', t.name, { timezone: t.timezone, rules: t.rules.length, holidays: t.holidays.length });
+    changed('time_condition.create');
+    res.status(201).json({ condition: t });
+  });
+
+  router.patch('/time-conditions/:id', validate({ params: schemas.idParam, body: schemas.patchTimeCondition }), async (req, res) => {
+    const t = await store.updateTimeCondition(req.valid.params.id, req.valid.body);
+    await record(req, req.valid.body.override ? 'pbx.time_condition.override' : 'pbx.time_condition.update', t.name,
+      req.valid.body.override ? { override: req.valid.body.override } : { fields: Object.keys(req.valid.body) });
+    changed('time_condition.update');
+    res.json({ condition: t });
+  });
+
+  router.delete('/time-conditions/:id', id, async (req, res) => {
+    try {
+      const t = await store.deleteTimeCondition(req.valid.params.id);
+      await record(req, 'pbx.time_condition.delete', t.name);
+      changed('time_condition.delete');
+      res.json({ status: 'deleted', name: t.name });
+    } catch (err) {
+      await record(req, 'pbx.time_condition.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
   // --------------------------------------------------------------------- apply
   router.get('/apply', async (_req, res) => {
     res.json(applier.status());

@@ -11,7 +11,8 @@ export function dashboardView({ softphone }) {
   const callFrom = { value: null }; // used when the admin has no extension of their own
 
   const extPanel = h('section', { class: 'panel' }, h('h2', null, 'Extensions'), cards);
-  const el = h('div', { class: 'dashboard' }, extPanel, paging, phone.el);
+  const mine = buildMyHandling();
+  const el = h('div', { class: 'dashboard' }, extPanel, paging, phone.el, mine.el);
 
   function renderCards(s) {
     const user = s.user;
@@ -139,6 +140,7 @@ export function dashboardView({ softphone }) {
 
   function update(s) {
     if (!s.user) return;
+    mine.update(s);
     renderCards(s);
     renderPaging(s);
     phone.update(s);
@@ -220,4 +222,58 @@ function buildPhonePanel(softphone) {
   }
 
   return { el, update };
+}
+
+// ---------------------------------------------------------- my call handling
+// Do not disturb and "forward all calls" for the signed-in person's own extension.
+function buildMyHandling() {
+  const el = h('section', { class: 'panel', id: 'my-handling', hidden: true });
+  let loadedFor = null;
+  let settings = null;
+
+  async function load(number) {
+    try {
+      settings = (await api('GET', '/my/extension')).extension;
+      draw();
+    } catch (err) {
+      mount(el, h('p', { class: 'form-error' }, describeError(err)));
+    }
+    loadedFor = number;
+  }
+
+  async function save(patch) {
+    try {
+      settings = { ...settings, ...(await api('PATCH', '/my/extension', patch)).extension };
+      store.toast('Saved', 'info');
+    } catch (err) {
+      store.toast(describeError(err));
+    }
+    draw();
+  }
+
+  function draw() {
+    if (!settings) return;
+    const others = store.state.extensions.filter((x) => x.extension !== settings.number);
+    const fwd = h('select', { id: 'my-forward', onchange: (e) => save({ fwd_all: e.target.value ? { type: 'extension', value: e.target.value } : null }) },
+      h('option', { value: '' }, 'No forwarding'),
+      others.map((x) => h('option', { value: x.extension }, `${x.extension} ${x.name}`)));
+    fwd.value = settings.fwd_all?.type === 'extension' ? settings.fwd_all.value : '';
+    mount(
+      el,
+      h('h2', null, `My calls (extension ${settings.number})`),
+      settings.dnd ? h('div', { class: 'banner warn' }, 'Do not disturb is ON: callers get a busy signal and your phones do not ring.') : null,
+      h('div', { class: 'actions' },
+        h('button', { class: `btn ${settings.dnd ? 'danger' : ''}`, id: 'my-dnd', onclick: () => save({ dnd: !settings.dnd }) }, settings.dnd ? 'Turn do not disturb off' : 'Turn do not disturb on')),
+      h('label', { class: 'inline-field' }, 'Forward all my calls to ', fwd),
+    );
+  }
+
+  return {
+    el,
+    update(s) {
+      const eligible = !!s.user && ['admin', 'operator'].includes(s.user.role) && !!s.user.extension;
+      el.hidden = !eligible;
+      if (eligible && loadedFor !== s.user.extension) { loadedFor = s.user.extension; load(s.user.extension); }
+    },
+  };
 }

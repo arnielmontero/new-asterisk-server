@@ -64,7 +64,7 @@ function createApp(deps) {
   const auth = authenticate(authService);
   api.use(auth);
 
-  api.use(extensionRoutes({ state, registry, store, config }));
+  api.use(extensionRoutes({ state, registry, store, config, applier, audit }));
   api.use('/users', requireRole('admin'), userRoutes({ users, audit, onUserSecurityChange }));
   api.use('/audit', requireRole('admin'), auditRoutes({ audit }));
   api.use('/system', requireRole('admin'), systemRoutes({ db, ami, state, paging, applier, trunkStatus, version, startedAt }));

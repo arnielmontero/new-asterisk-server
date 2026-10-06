@@ -40,8 +40,11 @@ class CdrService {
     const start = parseAstTime(evt.StartTime);
     if (!start || !evt.UniqueID) return null;
     const { direction, trunk } = this.direction(evt);
-    // Inbound trunk calls: the dialplan stored the number that was dialled; Asterisk's own destination is "h".
-    const did = direction === 'inbound' && /^in:/.test(evt.UserField || '') ? evt.UserField.slice(3).split(':')[0] : null;
+    // The dialplan stored the number that was dialled ("in:<DID>" for trunk calls, "to:<number>" for internal ones).
+    // Asterisk's own destination is an internal entry point ("h", "s") after a Goto, so it only wins when it is a real number.
+    const marked = /^(in|to):([^:]+)/.exec(evt.UserField || '');
+    const internalExten = ['s', 'h', 'i', 't', ''].includes(evt.Destination || '');
+    const did = marked && ((marked[1] === 'in' && direction === 'inbound') || (marked[1] === 'to' && internalExten)) ? marked[2] : null;
     const row = [
       evt.UniqueID, evt.LinkedID || null, start, parseAstTime(evt.AnswerTime), parseAstTime(evt.EndTime),
       evt.Source || null, did || evt.Destination || null, evt.CallerID || null, evt.Channel || null, evt.DestinationChannel || null,

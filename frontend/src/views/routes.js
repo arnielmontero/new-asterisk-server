@@ -1,13 +1,7 @@
 import { h, mount } from '../dom.js';
 import { api, describeError } from '../api.js';
 import { store } from '../store.js';
-import { field, check, dataTable, openDialog, nullIfEmpty, select, stateBadge } from './common.js';
-
-const DEST_TYPES = [
-  { value: 'extension', label: 'Ring an extension' },
-  { value: 'echo', label: 'Echo test (callers hear themselves)' },
-  { value: 'hangup', label: 'Reject the call' },
-];
+import { field, check, dataTable, openDialog, nullIfEmpty, select, stateBadge, loadDestinationData, describeDestination, destinationPicker } from './common.js';
 
 const PATTERN_PRESETS = [
   { label: 'Local 7-digit (dial 9 + number)', patterns: ['_9XXXXXXX'], strip: 1, prepend: '' },
@@ -15,12 +9,6 @@ const PATTERN_PRESETS = [
   { label: 'International (dial 900 + number)', patterns: ['_900X.'], strip: 3, prepend: '+' },
   { label: 'Everything starting with 9', patterns: ['_9X.'], strip: 1, prepend: '' },
 ];
-
-const describeDest = (d) => {
-  if (d.type === 'extension') return `Extension ${d.value}`;
-  if (d.type === 'echo') return 'Echo test';
-  return `Reject${d.value ? ` (${d.value})` : ''}`;
-};
 
 export function routesView() {
   const dialogHost = h('div');
@@ -30,12 +18,14 @@ export function routesView() {
   let outbound = [];
   let trunks = [];
   let extensions = [];
+  let destData = { extensions: [], ringGroups: [], timeConditions: [] };
 
   async function load() {
     try {
       const [i, o, t, e] = await Promise.all([
         api('GET', '/pbx/inbound-routes'), api('GET', '/pbx/outbound-routes'), api('GET', '/pbx/trunks'), api('GET', '/pbx/extensions')]);
       inbound = i.routes; outbound = o.routes; trunks = t.trunks; extensions = e.extensions;
+      destData = await loadDestinationData();
       renderInbound();
       renderOutbound();
     } catch (err) {
@@ -55,7 +45,7 @@ export function routesView() {
       dataTable(
         ['Name', 'Number (DID)', 'Trunk', 'Goes to', 'Status', ''],
         inbound.map((r) => [
-          h('strong', null, r.name), h('code', null, r.did === '*' ? 'any number' : r.did), r.trunk_name || 'all trunks', describeDest(r.destination),
+          h('strong', null, r.name), h('code', null, r.did === '*' ? 'any number' : r.did), r.trunk_name || 'all trunks', describeDestination(r.destination, destData),
           r.enabled ? stateBadge('online', 'Enabled') : stateBadge('offline', 'Disabled'),
           h('div', { class: 'row-actions' },
             h('button', { class: 'btn small', onclick: () => editInbound(r) }, 'Edit'),
@@ -75,25 +65,19 @@ export function routesView() {
           name: h('input', { required: true, maxlength: 60, placeholder: 'e.g. Main line', value: r?.name || '' }),
           did: h('input', { required: true, placeholder: 'e.g. 15551234567, or * for any number', value: r?.did || '' }),
           trunk: select([{ value: '', label: 'All trunks' }, ...trunks.map((t) => ({ value: String(t.id), label: t.display_name }))], r?.trunk_id ? String(r.trunk_id) : ''),
-          dest: select(DEST_TYPES, r?.destination.type || 'extension'),
-          ext: select(extensions.map((e) => ({ value: e.number, label: `${e.number} ${e.display_name}` })), r?.destination.type === 'extension' ? r.destination.value : extensions[0]?.number),
-          reason: select([{ value: 'reject', label: 'Rejected' }, { value: 'busy', label: 'Busy tone' }, { value: 'congestion', label: 'Congestion tone' }], r?.destination.type === 'hangup' ? r.destination.value || 'reject' : 'reject'),
           prefix: h('input', { maxlength: 30, placeholder: 'e.g. Sales  (shown before the caller name)', value: r?.cid_name_prefix || '' }),
           enabled: h('input', { type: 'checkbox', checked: r ? r.enabled : true }),
         };
-        const sync = () => { f.ext.hidden = f.dest.value !== 'extension'; f.reason.hidden = f.dest.value !== 'hangup'; };
-        f.dest.addEventListener('change', sync);
-        setTimeout(sync, 0);
+        const dest = destinationPicker(destData, { value: r?.destination || { type: 'extension', value: destData.extensions[0]?.number } });
         return h('form', {
           class: 'stack',
           onsubmit: async (e) => {
             e.preventDefault();
-            const type = f.dest.value;
             const body = {
               name: f.name.value.trim(),
               did: f.did.value.trim(),
               trunk_id: f.trunk.value ? Number(f.trunk.value) : null,
-              destination: { type, value: type === 'extension' ? f.ext.value : type === 'hangup' ? f.reason.value : '' },
+              destination: dest.get(),
               cid_name_prefix: nullIfEmpty(f.prefix.value),
               enabled: f.enabled.checked,
             };
@@ -109,7 +93,7 @@ export function routesView() {
         field('Name', f.name),
         field('Number (DID)', f.did, 'Exactly as your provider sends it (digits, optionally +). * matches any number. Advanced: an Asterisk pattern such as _555XXXX.'),
         field('Applies to', f.trunk),
-        field('Send the call to', f.dest), f.ext, f.reason,
+        field('Send the call to', dest.el),
         field('Caller name prefix', f.prefix),
         check(f.enabled, 'Enabled'),
         h('div', { class: 'actions' },

@@ -30,7 +30,7 @@ class PbxRegistry extends EventEmitter {
         .map((g) => [g.number, { number: g.number, name: g.name, members: g.members.filter((m) => this.extensions.has(m)) }]),
     );
     this.trunks = new Map(
-      trunks.map((t) => [t.name, { id: Number(t.id), name: t.name, displayName: t.display_name, authMode: t.auth_mode, host: t.host, enabled: t.enabled }]),
+      trunks.map((t) => [t.name, { id: Number(t.id), name: t.name, displayName: t.display_name, authMode: t.auth_mode, host: t.host, enabled: t.enabled, qualify: t.qualify !== false }]),
     );
     this.emit('changed');
   }
