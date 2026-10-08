@@ -1,6 +1,8 @@
 import { h, mount } from '../dom.js';
 import { api, describeError } from '../api.js';
 import { store, canUseSoftphone, canControlCalls } from '../store.js';
+import { buildMyVoicemail } from './voicemail.js';
+import { buildConferenceRooms } from './conferences.js';
 
 const STATE_CLASS = { Online: 'online', Offline: 'offline', 'In-Call': 'incall', Paging: 'paging', Unknown: 'unknown' };
 
@@ -13,7 +15,9 @@ export function dashboardView({ softphone }) {
   const extPanel = h('section', { class: 'panel' }, h('h2', null, 'Extensions'), cards);
   const mine = buildMyHandling();
   const queuesPanel = buildMyQueues();
-  const el = h('div', { class: 'dashboard' }, extPanel, paging, phone.el, queuesPanel.el, mine.el);
+  const voicemailPanel = buildMyVoicemail();
+  const roomsPanel = buildConferenceRooms(softphone);
+  const el = h('div', { class: 'dashboard' }, extPanel, paging, phone.el, roomsPanel.el, voicemailPanel.el, queuesPanel.el, mine.el);
 
   function renderCards(s) {
     const user = s.user;
@@ -143,6 +147,8 @@ export function dashboardView({ softphone }) {
     if (!s.user) return;
     mine.update(s);
     queuesPanel.update(s);
+    voicemailPanel.update(s);
+    roomsPanel.update(s);
     renderCards(s);
     renderPaging(s);
     phone.update(s);
@@ -271,6 +277,9 @@ function buildMyHandling() {
       h('div', { class: 'actions' },
         h('button', { class: `btn ${settings.dnd ? 'danger' : ''}`, id: 'my-dnd', onclick: () => save({ dnd: !settings.dnd }) }, settings.dnd ? 'Turn do not disturb off' : 'Turn do not disturb on')),
       h('label', { class: 'inline-field' }, 'Forward all my calls to ', fwd),
+      h('label', { class: 'check' },
+        h('input', { type: 'checkbox', id: 'my-voicemail-on', checked: !!settings.voicemail_enabled, onchange: (e) => save({ voicemail_enabled: e.target.checked }) }),
+        ' Voicemail: callers can leave a message when I am busy, away or unreachable'),
     );
   }
 

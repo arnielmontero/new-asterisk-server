@@ -2,6 +2,7 @@ import { h, mount, fmtTime } from '../dom.js';
 import { api, describeError } from '../api.js';
 import { store } from '../store.js';
 import { dataTable, select, stateBadge, fmtDuration } from './common.js';
+import { playRecordingDialog } from './voicemail.js';
 
 const DISP_CLASS = { ANSWERED: 'online', 'NO ANSWER': 'unknown', BUSY: 'incall', FAILED: 'unknown', CONGESTION: 'unknown' };
 const DISP_LABEL = { ANSWERED: 'Answered', 'NO ANSWER': 'No answer', BUSY: 'Busy', FAILED: 'Failed', CONGESTION: 'Congestion' };
@@ -13,6 +14,7 @@ export function callsView() {
   const f = { page: 1, pageSize: 50, number: '', direction: '', disposition: '', trunk: '', from: '', to: '', minDuration: '', legs: 'calls' };
   const statsBox = h('div', { class: 'stack' });
   const table = h('div');
+  const dialogHost = h('div');
   const pager = h('div', { class: 'pager' });
   let lastTick = store.state.cdrTick;
 
@@ -74,7 +76,7 @@ export function callsView() {
     mount(
       table,
       dataTable(
-        ['Time', 'Direction', 'From', 'To', 'Trunk', 'Result', 'Talk time', 'Total'],
+        ['Time', 'Direction', 'From', 'To', 'Trunk', 'Result', 'Talk time', 'Total', ''],
         items.map((r) => [
           fmtTime(r.start_time),
           DIR_LABEL[r.direction] || r.direction,
@@ -84,6 +86,7 @@ export function callsView() {
           stateBadge(DISP_CLASS[r.disposition] || 'offline', DISP_LABEL[r.disposition] || r.disposition || '—'),
           fmtDuration(r.billsec),
           fmtDuration(r.duration),
+          r.recording_id ? h('button', { class: 'btn small', 'data-recording': r.recording_id, onclick: () => playRecordingDialog(dialogHost, r.recording_id) }, 'Play recording') : '',
         ]),
         { empty: 'No calls match.' },
       ),
@@ -114,7 +117,7 @@ export function callsView() {
   load();
   return {
     el: h('div', { class: 'stack' }, h('h1', null, 'Call history'), statsBox,
-      h('section', { class: 'panel' }, filters, table, pager)),
+      h('section', { class: 'panel' }, filters, table, pager), dialogHost),
     destroy() { unsubscribe(); },
   };
 }

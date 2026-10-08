@@ -90,6 +90,8 @@ services:
       PBX_GENERATED_DIR: /pbx-generated
       PBX_MEDIA_DIR: /pbx-media
       CDR_RETENTION_DAYS: ${CDR_RETENTION_DAYS:-0}
+      RECORDING_RETENTION_DAYS: ${RECORDING_RETENTION_DAYS:-0}
+      VOICEMAIL_RETENTION_DAYS: ${VOICEMAIL_RETENTION_DAYS:-0}
     volumes:
       - pbx_generated:/pbx-generated
       - pbx_media:/pbx-media

@@ -86,11 +86,12 @@ class CdrService {
     const n = params.length;
     const rows = (await this.db.query(
       `SELECT id, unique_id, start_time, answer_time, end_time, src, dst, caller_id, channel, dst_channel, last_app,
-              disposition, duration, billsec, direction, trunk
+              disposition, duration, billsec, direction, trunk,
+              (SELECT r.id FROM recordings r WHERE r.finished AND (r.linked_id = cdr.linked_id OR r.linked_id = cdr.unique_id) ORDER BY r.id LIMIT 1) AS recording_id
        FROM cdr ${clause} ORDER BY start_time DESC, id DESC LIMIT $${n + 1} OFFSET $${n + 2}`,
       [...params, f.pageSize, (f.page - 1) * f.pageSize],
     )).rows;
-    return { total, page: f.page, pageSize: f.pageSize, items: rows.map((r) => ({ ...r, id: Number(r.id) })) };
+    return { total, page: f.page, pageSize: f.pageSize, items: rows.map((r) => ({ ...r, id: Number(r.id), recording_id: r.recording_id === null ? null : Number(r.recording_id) })) };
   }
 
   async exportRows(f, limit = 50000) {

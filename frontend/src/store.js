@@ -12,6 +12,8 @@ export const store = {
     trunks: [], // admins only: live trunk status [{ name, state, detail, activeChannels }]
     pbx: null, // admins only: configuration apply status { inSync, pending, last }
     cdrTick: 0, // bumped whenever a call record is stored; views refresh on change
+    conferenceTick: 0, // bumped whenever someone joins, leaves or is muted in a conference room
+    voicemailTick: 0, // bumped whenever a voicemail message arrives, is heard or deleted
     socketConnected: false,
     backendOk: true,
     sip: { state: 'idle', reason: '' }, // idle | registering | registered | failed | disabled

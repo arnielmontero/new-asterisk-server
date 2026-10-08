@@ -33,6 +33,10 @@ const publicExtension = (r) => ({
   fwd_busy: r.fwd_busy || null,
   fwd_noanswer: r.fwd_noanswer || null,
   noanswer_secs: r.noanswer_secs,
+  voicemail_enabled: r.voicemail_enabled,
+  voicemail_greeting_id: r.voicemail_greeting_id === null || r.voicemail_greeting_id === undefined ? null : Number(r.voicemail_greeting_id),
+  voicemail_max_secs: r.voicemail_max_secs,
+  record_calls: r.record_calls,
   created_at: r.created_at,
   updated_at: r.updated_at,
 });
@@ -56,7 +60,7 @@ class PbxStore {
   }
 
   /** A number may be an extension, a paging group, or reserved, never two of them. */
-  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null, exceptRingGroupId = null, exceptIvrId = null, exceptQueueId = null } = {}) {
+  async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null, exceptRingGroupId = null, exceptIvrId = null, exceptQueueId = null, exceptConferenceId = null } = {}) {
     if (RESERVED_NUMBERS.has(number)) throw conflict(`${number} is reserved (echo test)`, 'number_reserved');
     const e = (await this.db.query('SELECT id FROM extensions WHERE number = $1', [number])).rows[0];
     if (e && Number(e.id) !== exceptExtensionId) throw conflict(`${number} is already an extension`, 'number_in_use');
@@ -68,6 +72,8 @@ class PbxStore {
     if (iv && Number(iv.id) !== exceptIvrId) throw conflict(`${number} is already a menu`, 'number_in_use');
     const qu = (await this.db.query('SELECT id FROM queues WHERE number = $1', [number])).rows[0];
     if (qu && Number(qu.id) !== exceptQueueId) throw conflict(`${number} is already a queue`, 'number_in_use');
+    const cf = (await this.db.query('SELECT id FROM conferences WHERE number = $1', [number])).rows[0];
+    if (cf && Number(cf.id) !== exceptConferenceId) throw conflict(`${number} is already a conference room`, 'number_in_use');
   }
 
   // --------------------------------------------------------------- extensions
@@ -100,15 +106,18 @@ class PbxStore {
 
   async createExtension(data) {
     await this.assertNumberFree(data.number);
+    await this.assertPromptExists(data.voicemail_greeting_id);
     const secret = data.secret || generateSecret();
     const phoneSecret = data.phone_secret || generateSecret();
     try {
       const { rows } = await this.db.query(
         `INSERT INTO extensions (number, display_name, secret, phone_secret, webrtc_enabled, phone_enabled,
-                                 allow_outbound, outbound_cid, enabled, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+                                 allow_outbound, outbound_cid, enabled, notes,
+                                 voicemail_enabled, voicemail_greeting_id, voicemail_max_secs, record_calls)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
         [data.number, data.display_name, secret, phoneSecret, data.webrtc_enabled, data.phone_enabled,
-          data.allow_outbound, data.outbound_cid, data.enabled, data.notes],
+          data.allow_outbound, data.outbound_cid, data.enabled, data.notes,
+          data.voicemail_enabled ?? false, data.voicemail_greeting_id ?? null, data.voicemail_max_secs ?? 120, data.record_calls ?? false],
       );
       return this.getExtension(rows[0].id);
     } catch (err) {
@@ -118,6 +127,11 @@ class PbxStore {
 
   async updateExtension(id, patch) {
     const current = await this.getExtension(id);
+    if (patch.voicemail_greeting_id !== undefined) await this.assertPromptExists(patch.voicemail_greeting_id);
+    if (patch.voicemail_enabled === false && current.voicemail_enabled) {
+      const usedIn = await destinations.references(this.db, 'voicemail', current.number);
+      if (usedIn.length) throw conflict(`Voicemail for ${current.number} is still used by: ${usedIn.join(', ')}`, 'in_use');
+    }
     const sets = [];
     const params = [];
     for (const [key, value] of Object.entries(patch)) {
@@ -146,9 +160,15 @@ class PbxStore {
 
   async deleteExtension(id) {
     const ext = await this.getExtension(id);
-    const usedIn = await destinations.references(this.db, 'extension', ext.number, { exclude: `extension:${ext.number}` });
+    const usedIn = [
+      ...(await destinations.references(this.db, 'extension', ext.number, { exclude: `extension:${ext.number}` })),
+      ...(await destinations.references(this.db, 'voicemail', ext.number)),
+    ];
     if (usedIn.length) throw conflict(`Extension ${ext.number} is still used by: ${usedIn.join(', ')}`, 'in_use');
     await this.db.query('DELETE FROM extensions WHERE id = $1', [id]);
+    // Its messages go with it (the audio files are removed too).
+    const gone = (await this.db.query('DELETE FROM voicemails WHERE extension = $1 RETURNING file', [ext.number])).rows;
+    if (this.mediaDir) for (const m of gone) await fsp.unlink(path.join(this.mediaDir, 'voicemail', m.file)).catch(() => {});
     return ext;
   }
 
@@ -278,12 +298,12 @@ class PbxStore {
       const { rows } = await this.db.query(
         `INSERT INTO trunks (name, display_name, kind, auth_mode, host, port, transport, username, password, auth_username,
                              from_user, from_domain, register_expiry, codecs, dtmf_mode, max_channels, caller_id_num,
-                             caller_id_name, match_ips, inbound_default, qualify, enabled, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`,
+                             caller_id_name, match_ips, inbound_default, qualify, enabled, notes, record_calls)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
         [data.name, data.display_name, data.kind, data.auth_mode, data.host, data.port, data.transport, data.username,
           data.password, data.auth_username, data.from_user, data.from_domain, data.register_expiry, data.codecs,
           data.dtmf_mode, data.max_channels, data.caller_id_num, data.caller_id_name, data.match_ips,
-          data.inbound_default ? JSON.stringify(data.inbound_default) : null, data.qualify, data.enabled, data.notes],
+          data.inbound_default ? JSON.stringify(data.inbound_default) : null, data.qualify, data.enabled, data.notes, data.record_calls ?? false],
       );
       return this.getTrunk(rows[0].id);
     } catch (err) {
@@ -620,7 +640,7 @@ class PbxStore {
 
   async listPrompts() {
     const { rows } = await this.db.query(
-      `SELECT p.*, (EXISTS (SELECT 1 FROM ivrs i WHERE i.prompt_id = p.id) OR EXISTS (SELECT 1 FROM announcements a WHERE a.prompt_id = p.id)) AS in_use
+      `SELECT p.*, (EXISTS (SELECT 1 FROM ivrs i WHERE i.prompt_id = p.id) OR EXISTS (SELECT 1 FROM announcements a WHERE a.prompt_id = p.id) OR EXISTS (SELECT 1 FROM extensions x WHERE x.voicemail_greeting_id = p.id)) AS in_use
        FROM prompts p ORDER BY p.name`,
     );
     return rows.map((r) => ({ id: Number(r.id), name: r.name, duration_ms: r.duration_ms, size_bytes: r.size_bytes, in_use: r.in_use, created_at: r.created_at }));
@@ -670,7 +690,8 @@ class PbxStore {
     if (p.in_use) {
       const ivrs = (await this.db.query('SELECT number FROM ivrs WHERE prompt_id = $1', [id])).rows.map((r) => `menu ${r.number}`);
       const anns = (await this.db.query('SELECT name FROM announcements WHERE prompt_id = $1', [id])).rows.map((r) => `announcement "${r.name}"`);
-      throw conflict(`Prompt "${p.name}" is still used by: ${[...ivrs, ...anns].join(', ')}`, 'in_use');
+      const boxes = (await this.db.query('SELECT number FROM extensions WHERE voicemail_greeting_id = $1', [id])).rows.map((r) => `voicemail greeting of extension ${r.number}`);
+      throw conflict(`Prompt "${p.name}" is still used by: ${[...ivrs, ...anns, ...boxes].join(', ')}`, 'in_use');
     }
     await this.db.query('DELETE FROM prompts WHERE id = $1', [id]);
     await fsp.unlink(this.promptFile(id)).catch((err) => { if (err.code !== 'ENOENT') throw err; });
@@ -904,6 +925,54 @@ class PbxStore {
     return rows.length;
   }
 
+  // ---------------------------------------------------------------- conferences
+  async listConferences() {
+    const { rows } = await this.db.query('SELECT * FROM conferences ORDER BY number');
+    return rows.map((r) => ({
+      id: Number(r.id), number: r.number, name: r.name, pin: r.pin, admin_pin: r.admin_pin,
+      mute_on_join: r.mute_on_join, max_members: r.max_members, enabled: r.enabled,
+    }));
+  }
+
+  async getConference(id) {
+    const c = (await this.listConferences()).find((x) => x.id === id);
+    if (!c) throw notFound('Conference room not found');
+    return c;
+  }
+
+  async createConference(data) {
+    await this.assertNumberFree(data.number);
+    try {
+      const { rows } = await this.db.query(
+        'INSERT INTO conferences (number, name, pin, admin_pin, mute_on_join, max_members, enabled) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+        [data.number, data.name, data.pin, data.admin_pin, data.mute_on_join, data.max_members, data.enabled],
+      );
+      return this.getConference(Number(rows[0].id));
+    } catch (err) {
+      throw this.translate(err, 'conference room');
+    }
+  }
+
+  async updateConference(id, patch) {
+    const current = await this.getConference(id);
+    const next = { ...current, ...patch };
+    if (next.pin && next.admin_pin && next.pin === next.admin_pin) throw badRequest('The room PIN and the administrator PIN must differ', 'validation_error');
+    const sets = [];
+    const params = [];
+    for (const [key, value] of Object.entries(patch)) { params.push(value); sets.push(`${key} = $${params.length}`); }
+    params.push(id);
+    await this.db.query(`UPDATE conferences SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
+    return this.getConference(id);
+  }
+
+  async deleteConference(id) {
+    const c = await this.getConference(id);
+    const usedIn = await destinations.references(this.db, 'conference', c.number);
+    if (usedIn.length) throw conflict(`Conference room ${c.number} is still used by: ${usedIn.join(', ')}`, 'in_use');
+    await this.db.query('DELETE FROM conferences WHERE id = $1', [id]);
+    return c;
+  }
+
   // ----------------------------------------------------------------- snapshot
   /** Everything the renderer and the live registry need, including secrets. Never sent to clients. */
   async snapshot() {
@@ -918,7 +987,8 @@ class PbxStore {
     const announcements = await this.listAnnouncements();
     const ivrs = await this.listIvrs();
     const queues = await this.listQueues();
-    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound, ringGroups, timeConditions, announcements, ivrs, queues };
+    const conferences = await this.listConferences();
+    return { extensions, groups, trunks, inbound: inbound.map(inboundShape), outbound, ringGroups, timeConditions, announcements, ivrs, queues, conferences };
   }
 }
 

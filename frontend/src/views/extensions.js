@@ -13,6 +13,7 @@ export function extensionsView() {
   let groups = [];
   let sipDomain = '';
   let destData = { extensions: [], ringGroups: [], timeConditions: [] };
+  let prompts = [];
 
   const unsubscribe = store.subscribe(() => { if (extensions.length) renderExtensions(); });
 
@@ -23,6 +24,7 @@ export function extensionsView() {
       sipDomain = e.sipDomain;
       groups = g.groups;
       destData = await loadDestinationData();
+      prompts = (await api('GET', '/pbx/prompts')).prompts;
       renderExtensions();
       renderGroups();
     } catch (err) {
@@ -54,7 +56,9 @@ export function extensionsView() {
             [x.webrtc_enabled ? 'browser' : null, x.phone_enabled ? 'phone' : null].filter(Boolean).join(' + ') || 'none',
             h('div', null, x.allow_outbound ? (x.outbound_cid ? `allowed (CID ${x.outbound_cid})` : 'allowed') : 'internal only',
               x.dnd ? h('div', null, stateBadge('incall', 'DO NOT DISTURB')) : null,
-              x.fwd_all ? h('div', { class: 'muted small' }, `forwards all → ${x.fwd_all.value || x.fwd_all.type}`) : null),
+              x.fwd_all ? h('div', { class: 'muted small' }, `forwards all → ${x.fwd_all.value || x.fwd_all.type}`) : null,
+              x.voicemail_enabled ? h('div', { class: 'muted small' }, 'voicemail on') : null,
+              x.record_calls ? h('div', { class: 'muted small' }, 'calls recorded') : null),
             x.user || '—',
             h('div', { class: 'row-actions' },
               h('button', { class: 'btn small', onclick: () => editExtension(x) }, 'Edit'),
@@ -83,7 +87,12 @@ export function extensionsView() {
           enabled: h('input', { type: 'checkbox', checked: x ? x.enabled : true }),
           dnd: h('input', { type: 'checkbox', checked: x ? x.dnd : false }),
           secs: h('input', { type: 'number', min: 5, max: 120, value: x?.noanswer_secs || 25 }),
+          vm: h('input', { type: 'checkbox', checked: x ? x.voicemail_enabled : false }),
+          vmSecs: h('input', { type: 'number', min: 10, max: 600, value: x?.voicemail_max_secs || 120 }),
+          vmGreeting: h('select', null, h('option', { value: '' }, 'Just a beep'), prompts.map((p) => h('option', { value: String(p.id) }, p.name))),
+          rec: h('input', { type: 'checkbox', checked: x ? x.record_calls : false }),
         };
+        if (x?.voicemail_greeting_id) f.vmGreeting.value = String(x.voicemail_greeting_id);
         const own = x ? `extension:${x.number}` : null;
         const fwdAll = destinationPicker(destData, { value: x?.fwd_all, allowNone: true, noneLabel: 'No forwarding', exclude: own });
         const fwdBusy = destinationPicker(destData, { value: x?.fwd_busy, allowNone: true, noneLabel: 'Busy signal', exclude: own });
@@ -100,6 +109,10 @@ export function extensionsView() {
               outbound_cid: nullIfEmpty(f.cid.value),
               enabled: f.enabled.checked,
               notes: nullIfEmpty(f.notes.value),
+              voicemail_enabled: f.vm.checked,
+              voicemail_greeting_id: f.vmGreeting.value ? Number(f.vmGreeting.value) : null,
+              voicemail_max_secs: Number(f.vmSecs.value) || 120,
+              record_calls: f.rec.checked,
             };
             if (!creating) {
               Object.assign(body, { dnd: f.dnd.checked, noanswer_secs: Number(f.secs.value) || 25, fwd_all: fwdAll.get(), fwd_busy: fwdBusy.get(), fwd_noanswer: fwdNa.get() });
@@ -134,6 +147,12 @@ export function extensionsView() {
             field('When busy, forward to', fwdBusy.el),
             field('When no answer or not reachable, forward to', fwdNa.el),
             field('Ring for (seconds) before "no answer"', f.secs))),
+        h('details', null, h('summary', null, 'Voicemail and call recording'),
+          h('div', { class: 'stack' },
+            check(f.vm, 'Voicemail', '(callers who get no answer, a busy signal or no connection can leave a message)'),
+            field('Greeting', f.vmGreeting, 'Played before the beep. Record or upload one on the Menus & audio page.'),
+            field('Longest message (seconds)', f.vmSecs),
+            check(f.rec, 'Record calls of this extension', '(both directions, from answer to hang-up; recordings are on the Voicemail & recordings page)'))),
         check(f.enabled, 'Enabled'),
         h('div', { class: 'actions' },
           h('button', { class: 'btn primary', type: 'submit' }, creating ? 'Create extension' : 'Save'),

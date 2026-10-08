@@ -98,6 +98,7 @@ export function trunksView() {
           cidNum: h('input', { placeholder: 'e.g. 15551234567', value: t?.caller_id_num || '' }),
           cidName: h('input', { value: t?.caller_id_name || '' }),
           qualify: h('input', { type: 'checkbox', checked: t ? t.qualify : true }),
+          record: h('input', { type: 'checkbox', checked: t ? t.record_calls : false }),
           enabled: h('input', { type: 'checkbox', checked: t ? t.enabled : true }),
           notes: h('input', { maxlength: 500, value: t?.notes || '' }),
         };
@@ -146,6 +147,7 @@ export function trunksView() {
               caller_id_name: nullIfEmpty(f.cidName.value),
               inbound_default: def.get(),
               qualify: f.qualify.checked,
+              record_calls: f.record.checked,
               enabled: f.enabled.checked,
               notes: nullIfEmpty(f.notes.value),
             };
@@ -171,6 +173,7 @@ export function trunksView() {
           h('div', { class: 'inline-checks' }, codecBoxes.map((b) => check(b.el, b.c)))),
         field('Calls that match no inbound route', def.el),
         check(f.qualify, 'Check that the trunk is reachable', '(sends SIP OPTIONS every minute)'),
+        check(f.record, 'Record calls on this trunk', '(every call that is answered, in and out; see Voicemail & recordings)'),
         advanced,
         field('Notes', f.notes),
         check(f.enabled, 'Enabled'),

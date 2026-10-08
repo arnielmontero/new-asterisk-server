@@ -45,6 +45,7 @@ the Users page. The password is never written to the logs.
 | `RTP_START`, `RTP_END` | UDP media port range (default 10100-10300). Must not contain UDP 10080: browsers refuse to send to it, so calls landing there have no audio (the container refuses to start with such a range) |
 | `EXT_1001_PASSWORD`, `EXT_1002_PASSWORD`, `EXT_1001_PHONE_PASSWORD`, `EXT_1002_PHONE_PASSWORD` | **Optional, used once.** Extensions are now created and managed in the web UI with generated credentials. On the first start after upgrading from the fixed-extension version these give the two original extensions (1001, 1002) their existing passwords, so phones that are already set up keep registering. Afterwards changing them in `.env` has no effect: use the Extensions page |
 | `CDR_RETENTION_DAYS` | delete call records older than this many days (default `0` = keep forever) |
+| `RECORDING_RETENTION_DAYS`, `VOICEMAIL_RETENTION_DAYS` | delete call recordings / voicemail messages older than this many days (default `0` = keep forever). Audio lives in the `pbx_media` volume: watch its size, and check which rules apply to recording calls where you are |
 | `AMI_USER`, `AMI_PASS`, `AMI_PORT` | the dedicated AMI account used by the backend |
 | `POSTGRES_*`, `JWT_SECRET`, `ADMIN_PASSWORD` | database and application secrets |
 

@@ -9,7 +9,7 @@ const { badRequest } = require('../errors');
 const regenerateBody = z.strictObject({ which: z.enum(['browser', 'phone', 'both']).optional().default('both') });
 
 /** Mounted at /pbx behind authenticate + requireRole('admin'). Every change is audited and applied to Asterisk. */
-function pbxRoutes({ store, applier, trunkStatus, queueService, audit, config }) {
+function pbxRoutes({ store, applier, trunkStatus, queueService, conferenceService, audit, config }) {
   const router = express.Router();
   const id = validate({ params: schemas.idParam });
 
@@ -431,6 +431,61 @@ function pbxRoutes({ store, applier, trunkStatus, queueService, audit, config })
       throw err;
     }
   });
+
+  // ---------------------------------------------------------------- conferences
+  router.get('/conferences', async (_req, res) => {
+    res.json({ conferences: await store.listConferences() });
+  });
+
+  router.get('/conferences/status', async (_req, res) => {
+    res.json(await conferenceService.status());
+  });
+
+  router.post('/conferences', validate({ body: schemas.createConference }), async (req, res) => {
+    try {
+      const c = await store.createConference(req.valid.body);
+      await record(req, 'pbx.conference.create', c.number, { name: c.name, pin: !!c.pin, admin_pin: !!c.admin_pin });
+      changed('conference.create');
+      res.status(201).json({ conference: c });
+    } catch (err) {
+      await record(req, 'pbx.conference.create', req.valid.body.number, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  router.patch('/conferences/:id', validate({ params: schemas.idParam, body: schemas.patchConference }), async (req, res) => {
+    const c = await store.updateConference(req.valid.params.id, req.valid.body);
+    await record(req, 'pbx.conference.update', c.number, { fields: Object.keys(req.valid.body) });
+    changed('conference.update');
+    res.json({ conference: c });
+  });
+
+  router.delete('/conferences/:id', id, async (req, res) => {
+    try {
+      const c = await store.deleteConference(req.valid.params.id);
+      await record(req, 'pbx.conference.delete', c.number);
+      changed('conference.delete');
+      res.json({ status: 'deleted', number: c.number });
+    } catch (err) {
+      await record(req, 'pbx.conference.delete', req.valid.params.id, { reason: err.code || 'error' }, 'failure');
+      throw err;
+    }
+  });
+
+  // Live control of a room: only people who are in it right now can be acted on.
+  const control = (action, { needsChannel = true } = {}) => async (req, res) => {
+    const c = await store.getConference(req.valid.params.id);
+    const channel = needsChannel ? req.valid.body.channel : null;
+    await conferenceService.control(c.number, action, channel);
+    await record(req, `pbx.conference.${action}`, c.number, channel ? { channel } : null);
+    res.json({ status: 'ok' });
+  };
+  const channelBody = validate({ params: schemas.idParam, body: schemas.conferenceMember });
+  router.post('/conferences/:id/kick', channelBody, control('kick'));
+  router.post('/conferences/:id/mute', channelBody, control('mute'));
+  router.post('/conferences/:id/unmute', channelBody, control('unmute'));
+  router.post('/conferences/:id/lock', id, control('lock', { needsChannel: false }));
+  router.post('/conferences/:id/unlock', id, control('unlock', { needsChannel: false }));
 
   // --------------------------------------------------------------------- apply
   router.get('/apply', async (_req, res) => {

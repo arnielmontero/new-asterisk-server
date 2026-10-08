@@ -15,6 +15,8 @@ import { routesView } from './views/routes.js';
 import { callsView } from './views/calls.js';
 import { callflowView } from './views/callflow.js';
 import { menusView } from './views/menus.js';
+import { recordingsView } from './views/voicemail.js';
+import { conferencesView } from './views/conferences.js';
 
 const root = document.getElementById('app');
 const audioEl = document.getElementById('remote-audio');
@@ -33,6 +35,8 @@ const ROUTES = {
   '#/callflow': { admin: true, view: () => callflowView() },
   '#/menus': { admin: true, view: () => menusView() },
   '#/calls': { admin: true, view: () => callsView() },
+  '#/recordings': { admin: true, view: () => recordingsView() },
+  '#/conferences': { admin: true, view: () => conferencesView() },
   '#/users': { admin: true, view: () => usersView() },
   '#/audit': { admin: true, view: () => auditView() },
   '#/system': { admin: true, view: () => systemView() },
@@ -86,7 +90,7 @@ function renderChrome() {
     chrome.header,
     h('div', { class: 'brand' }, 'LAN Communications'),
     h('nav', null, navLink('#/', 'Dashboard'),
-      user.role === 'admin' ? [navLink('#/extensions', 'Extensions'), navLink('#/trunks', 'Trunks'), navLink('#/routes', 'Routes'), navLink('#/callflow', 'Call flow'), navLink('#/menus', 'Menus & audio'), navLink('#/calls', 'Call history'), navLink('#/users', 'Users'), navLink('#/audit', 'Audit log'), navLink('#/system', 'System')] : null),
+      user.role === 'admin' ? [navLink('#/extensions', 'Extensions'), navLink('#/trunks', 'Trunks'), navLink('#/routes', 'Routes'), navLink('#/callflow', 'Call flow'), navLink('#/conferences', 'Conferences'), navLink('#/menus', 'Menus & audio'), navLink('#/calls', 'Call history'), navLink('#/recordings', 'Voicemail & recordings'), navLink('#/users', 'Users'), navLink('#/audit', 'Audit log'), navLink('#/system', 'System')] : null),
     h('div', { class: 'who' },
       canUseSoftphone(user) ? h('span', { class: `status-chip sip-${s.sip.state}`, id: 'chip-sip', title: s.sip.reason || '' }, `SIP ${sipLabel}`) : null,
       h('span', { class: `status-chip ${s.backendOk && s.socketConnected ? 'ok' : 'bad'}`, id: 'chip-server' },
@@ -193,6 +197,8 @@ function connectSocket() {
   socket.on('trunk.snapshot', (trunks) => store.set({ trunks }));
   socket.on('pbx.apply', (pbx) => store.set({ pbx }));
   socket.on('cdr.new', () => store.set({ cdrTick: store.state.cdrTick + 1 }));
+  socket.on('conference.changed', () => store.set({ conferenceTick: store.state.conferenceTick + 1 }));
+  socket.on('voicemail.changed', () => store.set({ voicemailTick: store.state.voicemailTick + 1 }));
   socket.on('ami.snapshot', (ami) => store.set({ ami }));
   socket.on('ami.connected', (ami) => store.set({ ami }));
   socket.on('ami.disconnected', (ami) => store.set({ ami }));

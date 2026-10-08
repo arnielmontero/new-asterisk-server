@@ -5,7 +5,7 @@ const { badRequest } = require('../errors');
 // A destination is where a call goes next: { type, value }. Every feature that can route a call (inbound
 // routes, trunk defaults, ring group fallbacks, time conditions, forwarding ...) uses this one shape, so a
 // new kind of destination only has to be added here and in the renderer.
-const DEST_TYPES = ['extension', 'ringgroup', 'timecondition', 'ivr', 'announcement', 'queue', 'echo', 'hangup'];
+const DEST_TYPES = ['extension', 'ringgroup', 'timecondition', 'ivr', 'announcement', 'queue', 'voicemail', 'conference', 'echo', 'hangup'];
 const HANGUP_REASONS = ['', 'busy', 'congestion', 'reject'];
 
 const destinationSchema = z.strictObject({
@@ -13,7 +13,7 @@ const destinationSchema = z.strictObject({
   value: z.string().trim().max(40).optional().default(''),
 });
 
-const NUMBER_TYPES = new Set(['extension', 'ringgroup', 'ivr', 'queue']);
+const NUMBER_TYPES = new Set(['extension', 'ringgroup', 'ivr', 'queue', 'voicemail', 'conference']);
 const ID_TYPES = new Set(['timecondition', 'announcement']);
 
 /** Name of the dialplan context that handles a destination. Every destination type has one (rendered). */
@@ -32,6 +32,8 @@ const label = (dest) => {
     case 'timecondition': return `time condition ${dest.value}`;
     case 'ivr': return `menu ${dest.value}`;
     case 'queue': return `queue ${dest.value}`;
+    case 'conference': return `conference room ${dest.value}`;
+    case 'voicemail': return `voicemail of ${dest.value}`;
     case 'announcement': return `announcement ${dest.value}`;
     case 'echo': return 'echo test';
     default: return 'reject';
@@ -51,6 +53,8 @@ async function assertValid(db, dest) {
   if (dest.type === 'extension' && !(await exists('SELECT 1 FROM extensions WHERE number = $1', [dest.value]))) throw bad(`Extension ${dest.value} does not exist`);
   if (dest.type === 'ringgroup' && !(await exists('SELECT 1 FROM ring_groups WHERE number = $1', [dest.value]))) throw bad(`Ring group ${dest.value} does not exist`);
   if (dest.type === 'timecondition' && !(await exists('SELECT 1 FROM time_conditions WHERE id = $1', [dest.value]))) throw bad(`Time condition ${dest.value} does not exist`);
+  if (dest.type === 'conference' && !(await exists('SELECT 1 FROM conferences WHERE number = $1', [dest.value]))) throw bad(`Conference room ${dest.value} does not exist`);
+  if (dest.type === 'voicemail' && !(await exists('SELECT 1 FROM extensions WHERE number = $1 AND voicemail_enabled', [dest.value]))) throw bad(`Extension ${dest.value} has no voicemail`);
   if (dest.type === 'queue' && !(await exists('SELECT 1 FROM queues WHERE number = $1', [dest.value]))) throw bad(`Queue ${dest.value} does not exist`);
   if (dest.type === 'ivr' && !(await exists('SELECT 1 FROM ivrs WHERE number = $1', [dest.value]))) throw bad(`Menu ${dest.value} does not exist`);
   if (dest.type === 'announcement' && !(await exists('SELECT 1 FROM announcements WHERE id = $1', [dest.value]))) throw bad(`Announcement ${dest.value} does not exist`);

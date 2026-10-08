@@ -41,6 +41,8 @@ const envSchema = z.object({
   PBX_GENERATED_DIR: z.string().default('/pbx-generated'),
   PBX_MEDIA_DIR: z.string().default('/pbx-media'),
   CDR_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
+  RECORDING_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
+  VOICEMAIL_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
 });
 
 function loadConfig(env = process.env) {
@@ -81,6 +83,8 @@ function loadConfig(env = process.env) {
     pbxGeneratedDir: e.PBX_GENERATED_DIR,
     pbxMediaDir: e.PBX_MEDIA_DIR,
     cdrRetentionDays: e.CDR_RETENTION_DAYS,
+    recordingRetentionDays: e.RECORDING_RETENTION_DAYS,
+    voicemailRetentionDays: e.VOICEMAIL_RETENTION_DAYS,
   };
 }
 

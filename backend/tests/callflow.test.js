@@ -229,11 +229,11 @@ describe('call flow: ring groups, time conditions, forwarding and do not disturb
       const rg = (strategy, over = {}) => ({ id: 1, number: '800', name: 'S', strategy, ring_secs: 15, members: ['1002', '1001'], fail_dest: { type: 'extension', value: '1001' }, enabled: true, ...over });
       const all = render({ ringGroups: [rg('ringall')] });
       const a = all.slice(all.indexOf('[dst-ringgroup-800]'));
-      assert.match(a, /Gosub\(sub-rg-add,s,1\(1002\)\)[\s\S]*Gosub\(sub-rg-add,s,1\(1001\)\)[\s\S]*Dial\(\$\{RG_TARGETS\},15\)[\s\S]*Goto\(dst-extension-1001,s,1\)/);
+      assert.match(a, /Gosub\(sub-rg-add,s,1\(1002\)\)[\s\S]*Gosub\(sub-rg-add,s,1\(1001\)\)[\s\S]*Dial\(\$\{RG_TARGETS\},15,U\(sub-rec-callee\)\)[\s\S]*Goto\(dst-extension-1001,s,1\)/);
       const seq = render({ ringGroups: [rg('sequential')] });
       const q = seq.slice(seq.indexOf('[dst-ringgroup-800]'));
       assert.ok(q.indexOf('sub-dialstr,s,1(1002,1)') < q.indexOf('sub-dialstr,s,1(1001,1)'), 'member order');
-      assert.equal((q.match(/Dial\(\$\{DIALSTR\},15\)/g) || []).length, 2);
+      assert.equal((q.match(/Dial\(\$\{DIALSTR\},15,U\(sub-rec-callee\)\)/g) || []).length, 2);
       const disabled = render({ ringGroups: [rg('ringall', { enabled: false })] });
       assert.match(disabled.slice(disabled.indexOf('[dst-ringgroup-800]')), /Hangup\(21\)/);
       assert.ok(!disabled.includes('exten => 800,1'), 'a disabled group is not dialable');

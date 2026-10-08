@@ -16,6 +16,9 @@ const { ConfigApplier } = require('./pbx/apply');
 const { TrunkStatus } = require('./pbx/trunk-status');
 const { CdrService } = require('./cdr/service');
 const { QueueService } = require('./queues/service');
+const { VoicemailService } = require('./voicemail/service');
+const { ConferenceService } = require('./conferences/service');
+const { RecordingService } = require('./recordings/service');
 const { PagingService } = require('./paging/service');
 const { watchOriginateResults } = require('./calls/routes');
 const { createSocketServer } = require('./socket');
@@ -66,18 +69,21 @@ async function main() {
   });
   const cdr = new CdrService({ db, registry, ami, logger });
   const queueService = new QueueService({ ami, db, logger });
+  const conferenceService = new ConferenceService({ ami, registry, logger });
+  const voicemail = new VoicemailService({ db, ami, logger, dir: path.join(config.pbxMediaDir, 'voicemail') });
+  const recordings = new RecordingService({ db, ami, logger, dir: path.join(config.pbxMediaDir, 'recordings') });
   const paging = new PagingService({ ami, state, registry, audit, logger });
   watchOriginateResults({ ami, audit });
 
   let socketApi = null;
   const app = createApp({
-    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService,
+    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService, conferenceService, voicemail, recordings,
     version: pkg.version,
     startedAt,
     onUserSecurityChange: (userId) => socketApi?.disconnectUser(userId),
   });
   const server = http.createServer(app);
-  socketApi = createSocketServer({ httpServer: server, authService, state, paging, ami, registry, trunkStatus, applier, cdr, logger });
+  socketApi = createSocketServer({ httpServer: server, authService, state, paging, ami, registry, trunkStatus, applier, cdr, voicemail, conferenceService, logger });
 
   // Write the generated configuration before Asterisk is asked to load it; a reload follows once AMI connects.
   await applier.apply('startup', { force: true });
@@ -90,6 +96,16 @@ async function main() {
     pruneTimer = setInterval(prune, 3600 * 1000);
     pruneTimer.unref?.();
   }
+  // Recordings and voicemail: retention (0 = keep forever), and recordings whose end was never reported are closed.
+  const media = () => {
+    recordings.sweep().catch((err) => logger.warn({ err: err.message }, 'recording sweep failed'));
+    if (config.recordingRetentionDays > 0) recordings.prune(config.recordingRetentionDays).then((n) => n && logger.info({ removed: n }, 'old recordings removed')).catch((err) => logger.warn({ err: err.message }, 'recording pruning failed'));
+    if (config.voicemailRetentionDays > 0) voicemail.prune(config.voicemailRetentionDays).then((n) => n && logger.info({ removed: n }, 'old voicemail removed')).catch((err) => logger.warn({ err: err.message }, 'voicemail pruning failed'));
+  };
+  recordings.init().catch((err) => logger.warn({ err: err.message }, 'could not resume recordings'));
+  media();
+  const mediaTimer = setInterval(media, 3600 * 1000);
+  mediaTimer.unref?.();
   ami.start(); // reconnects on its own; the HTTP API stays up while Asterisk is away
   await new Promise((resolve) => server.listen(config.port, '0.0.0.0', resolve));
   logger.info({ port: config.port }, 'listening');
@@ -114,6 +130,7 @@ async function main() {
       await httpClosed;
       trunkStatus.stop();
       clearInterval(pruneTimer);
+      clearInterval(mediaTimer);
       await ami.stop();
       await db.close();
       logger.info('shutdown complete');

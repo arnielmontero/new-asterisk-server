@@ -18,10 +18,12 @@ const { COOKIE_NAME } = require('../auth/middleware');
  *   paging.started            { group, name, extension, username, targets, status, startedAt }
  *   paging.ended              { group, name, extension, username, reason, durationSeconds }
  *   paging.failed             { group, name, extension, username, reason }
+ *   voicemail.changed         { extension, kind: new|heard|deleted, id }   (owner of the box and administrators)
+ *   conference.changed        { room }                                     (someone joined, left, was muted or the room was locked)
  *   ami.connected / ami.disconnected   { state, ... }          (administrators only)
  *   ami.snapshot              { state, ... }                    (administrators only, on connect)
  */
-function createSocketServer({ httpServer, authService, state, paging, ami, registry, trunkStatus, applier, cdr, logger }) {
+function createSocketServer({ httpServer, authService, state, paging, ami, registry, trunkStatus, applier, cdr, voicemail, conferenceService, logger }) {
   const io = new Server(httpServer, {
     path: '/socket.io',
     serveClient: false,
@@ -54,6 +56,7 @@ function createSocketServer({ httpServer, authService, state, paging, ami, regis
   io.on('connection', (socket) => {
     const { user } = socket.data;
     socket.join(`user:${user.id}`);
+    if (user.extension) socket.join(`ext:${user.extension}`);
     socket.emit('extension.snapshot', state.snapshot());
     if (user.role === 'admin') {
       socket.join('admins');
@@ -70,6 +73,9 @@ function createSocketServer({ httpServer, authService, state, paging, ami, regis
   trunkStatus.on('change', (list) => io.to('admins').emit('trunk.snapshot', list));
   applier.on('applied', () => io.to('admins').emit('pbx.apply', applier.status()));
   applier.on('failed', () => io.to('admins').emit('pbx.apply', applier.status()));
+  // A message arrived, was heard or deleted: the owner's open dashboards (and administrators) refresh.
+  if (voicemail) voicemail.onChange = (m) => io.to(`ext:${m.extension}`).to('admins').emit('voicemail.changed', m);
+  if (conferenceService) conferenceService.onChange = (c) => io.emit('conference.changed', c);
   if (cdr) cdr.onRecord = (r) => io.to('admins').emit('cdr.new', r);
   state.on('change', (ext) => io.emit('extension.status.changed', ext));
   state.on('call.started', (c) => io.emit('call.started', c));

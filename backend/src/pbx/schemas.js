@@ -42,6 +42,10 @@ const createExtension = z.strictObject({
   outbound_cid: callerNumber.nullable().optional().default(null),
   enabled: bool.optional().default(true),
   notes: nullableText(500).optional().default(null),
+  voicemail_enabled: bool.optional().default(false),
+  voicemail_greeting_id: z.coerce.number().int().positive().nullable().optional().default(null),
+  voicemail_max_secs: z.coerce.number().int().min(10).max(600).optional().default(120),
+  record_calls: bool.optional().default(false),
 });
 
 const patchExtension = z
@@ -60,6 +64,10 @@ const patchExtension = z
     fwd_busy: destinationSchema.nullable().optional(),
     fwd_noanswer: destinationSchema.nullable().optional(),
     noanswer_secs: z.coerce.number().int().min(5).max(120).optional(),
+    voicemail_enabled: bool.optional(),
+    voicemail_greeting_id: z.coerce.number().int().positive().nullable().optional(),
+    voicemail_max_secs: z.coerce.number().int().min(10).max(600).optional(),
+    record_calls: bool.optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
 
@@ -110,6 +118,7 @@ const trunkBase = {
   match_ips: ipList,
   inbound_default: destination,
   qualify: bool,
+  record_calls: bool,
   enabled: bool,
   notes: nullableText(500),
 };
@@ -154,6 +163,7 @@ const createTrunk = withTrunkRules(
     match_ips: trunkBase.match_ips.optional().default([]),
     inbound_default: trunkBase.inbound_default.optional().default(null),
     qualify: trunkBase.qualify.optional().default(true),
+    record_calls: trunkBase.record_calls.optional().default(false),
     enabled: trunkBase.enabled.optional().default(true),
     notes: trunkBase.notes.optional().default(null),
   }),
@@ -354,6 +364,31 @@ const patchQueue = z
 const queueStatsQuery = z.strictObject({ from: z.coerce.date().optional(), to: z.coerce.date().optional(), serviceLevel: z.coerce.number().int().min(1).max(600).optional().default(20) });
 const pauseBody = z.strictObject({ paused: z.boolean() });
 
+const PIN_RE = /^[0-9]{3,10}$/;
+const conferenceFields = {
+  name: z.string().trim().regex(NAME_RE, "Name may use letters, digits, spaces and . , ' & ( ) _ - (max 40)"),
+  pin: z.string().trim().regex(PIN_RE, 'A PIN is 3 to 10 digits').nullable(),
+  admin_pin: z.string().trim().regex(PIN_RE, 'A PIN is 3 to 10 digits').nullable(),
+  mute_on_join: bool,
+  max_members: z.coerce.number().int().refine((n) => n === 0 || (n >= 2 && n <= 200), 'Use 0 (no limit) or 2 to 200'),
+  enabled: bool,
+};
+const pinsDiffer = (o) => !(o.pin && o.admin_pin && o.pin === o.admin_pin);
+const createConference = z.strictObject({
+  number: extNumber,
+  name: conferenceFields.name,
+  pin: conferenceFields.pin.optional().default(null),
+  admin_pin: conferenceFields.admin_pin.optional().default(null),
+  mute_on_join: conferenceFields.mute_on_join.optional().default(false),
+  max_members: conferenceFields.max_members.optional().default(0),
+  enabled: conferenceFields.enabled.optional().default(true),
+}).refine(pinsDiffer, { message: 'The room PIN and the administrator PIN must differ', path: ['admin_pin'] });
+const patchConference = z
+  .strictObject(Object.fromEntries(Object.entries(conferenceFields).map(([k, v]) => [k, v.optional()])))
+  .refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' })
+  .refine(pinsDiffer, { message: 'The room PIN and the administrator PIN must differ', path: ['admin_pin'] });
+const conferenceMember = z.strictObject({ channel: z.string().regex(/^[A-Za-z0-9_./@-]{3,100}$/, 'Not a channel name') });
+
 const idParam = z.strictObject({ id: z.coerce.number().int().positive() });
 
 const cdrQuery = z.strictObject({
@@ -383,7 +418,7 @@ module.exports = {
     createTrunk, patchTrunk, createInbound, patchInbound, createOutbound, patchOutbound,
     createRingGroup, patchRingGroup, createTimeCondition, patchTimeCondition,
     uploadPrompt, renamePrompt, createAnnouncement, patchAnnouncement, createIvr, patchIvr,
-    createQueue, patchQueue, queueStatsQuery, pauseBody,
+    createQueue, patchQueue, queueStatsQuery, pauseBody, createConference, patchConference, conferenceMember,
     idParam, cdrQuery, cdrStatsQuery,
   },
   trunkRules,

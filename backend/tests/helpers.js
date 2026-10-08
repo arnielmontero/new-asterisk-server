@@ -20,6 +20,9 @@ const { ConfigApplier } = require('../src/pbx/apply');
 const { TrunkStatus } = require('../src/pbx/trunk-status');
 const { CdrService } = require('../src/cdr/service');
 const { QueueService } = require('../src/queues/service');
+const { VoicemailService } = require('../src/voicemail/service');
+const { ConferenceService } = require('../src/conferences/service');
+const { RecordingService } = require('../src/recordings/service');
 const { PagingService } = require('../src/paging/service');
 const { createApp } = require('../src/app');
 
@@ -130,10 +133,15 @@ async function createHarness({ env = {}, pagingTtl = 20, migrate = true } = {}) 
   const applier = new ConfigApplier({ store, registry, ami, db, logger, dir: generatedDir, debounceMs: 150 });
   const cdr = new CdrService({ db, registry, ami, logger });
   const queueService = new QueueService({ ami, db, logger });
+  fs.mkdirSync(path.join(mediaDir, 'voicemail'), { recursive: true });
+  fs.mkdirSync(path.join(mediaDir, 'recordings'), { recursive: true });
+  const conferenceService = new ConferenceService({ ami, registry, logger });
+  const voicemail = new VoicemailService({ db, ami, logger, dir: path.join(mediaDir, 'voicemail') });
+  const recordings = new RecordingService({ db, ami, logger, dir: path.join(mediaDir, 'recordings') });
   const paging = new PagingService({ ami, state, registry, audit, logger, authTtlSeconds: pagingTtl });
   const disconnected = [];
   const app = createApp({
-    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService,
+    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService, conferenceService, voicemail, recordings,
     version: 'test', startedAt: Date.now(),
     onUserSecurityChange: (id) => disconnected.push(id),
   });
@@ -180,7 +188,7 @@ async function createHarness({ env = {}, pagingTtl = 20, migrate = true } = {}) 
     ami.register('1002');
   }
 
-  return { app, agent, reset, config, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService, generatedDir, mediaDir, login, makeUser, seedAdmin, cleanup, dbName, disconnected, logger };
+  return { app, agent, reset, config, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService, conferenceService, voicemail, recordings, generatedDir, mediaDir, login, makeUser, seedAdmin, cleanup, dbName, disconnected, logger };
 }
 
 const auditCount = async (db, where = 'true', params = []) =>

@@ -17,6 +17,7 @@ function assertSafe(label, value) {
 
 // Prompts live in a volume mounted at the same place in the backend (writes) and Asterisk (reads).
 const PROMPT_DIR = '/pbx-media/prompts';
+const VOICEMAIL_DIR = '/pbx-media/voicemail';
 
 const HANGUP_CAUSE = { busy: 17, congestion: 34, reject: 21 };
 
@@ -133,7 +134,7 @@ const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', '
  * One dialplan context per destination ("dst-<type>-<value>", entered with Goto at s,1). Each starts with a hop
  * counter so a misconfigured loop (time condition -> time condition -> ...) is cut off instead of spinning.
  */
-function renderDestinations({ extensions, ringGroups, timeConditions, announcements = [], ivrs = [], queues = [] }) {
+function renderDestinations({ extensions, ringGroups, timeConditions, announcements = [], ivrs = [], queues = [], conferences = [] }) {
   const out = ['; ------------------------------------------------------------------ destinations'];
   const hop = ' same => n,Gosub(sub-hop,s,1)';
   const ctx = (name, ...lines) => { out.push(`[${name}]`, 'exten => s,1,NoOp(' + name + ')', hop, ...lines, ''); };
@@ -146,6 +147,37 @@ function renderDestinations({ extensions, ringGroups, timeConditions, announceme
 
   for (const e of extensions) {
     ctx(`dst-extension-${assertSafe('extension', e.number)}`, ` same => n,Gosub(sub-dial-ext,s,1(${e.number}))`, ' same => n,Hangup()');
+  }
+
+  // A voicemail box is a destination of its own (dst-voicemail-<ext>): sub-dial-ext sends unanswered / busy / unreachable
+  // calls there, and routes, menus and forwarding can name it. The caller hears the greeting (if any) and a beep, then the
+  // message is recorded to the shared media volume. The file is reported to the backend with a UserEvent: once the caller
+  // finishes, or from the "h" extension when the caller simply hangs up (Record keeps the file on hangup, option "k"; "q" because no beep sound file is installed, the tone above is the beep).
+  for (const e of extensions) {
+    const num = assertSafe('extension', e.number);
+    const name = `dst-voicemail-${num}`;
+    if (!e.enabled || !e.voicemail_enabled) { ctx(name, ' same => n,Hangup(21)'); continue; }
+    const greeting = e.voicemail_greeting_id ? [` same => n,Playback(${PROMPT_DIR}/${Number(e.voicemail_greeting_id)})`] : [];
+    const report = `UserEvent(VoicemailLeft,Extension: ${num},File: \${VM_FILE},Caller: \${VM_CALLER})`;
+    out.push(
+      `[${name}]`, `exten => s,1,NoOp(${name})`, hop,
+      ' same => n,Answer()',
+      ' same => n,Wait(1)',
+      ` same => n,Set(VM_FILE=${num}-\${UNIQUEID}.wav)`,
+      // The caller id is chosen by whoever is calling, so only plain characters are passed on in the event.
+      ' same => n,Set(VM_CALLER=${FILTER(0-9A-Za-z+*#._@,${CALLERID(num)})})',
+      ' same => n,Set(VM_STARTED=0)',
+      ...greeting,
+      ' same => n,Playtones(!1000/350)',
+      ' same => n,Wait(0.6)',
+      ' same => n,StopPlayTones()',
+      ' same => n,Set(VM_STARTED=1)',
+      ` same => n,Record(${VOICEMAIL_DIR}/\${VM_FILE},4,${Number(e.voicemail_max_secs) || 120},kq)`,
+      ' same => n,Set(VM_DONE=1)',
+      ` same => n,${report}`,
+      ' same => n,Hangup()',
+      `exten => h,1,ExecIf($["\${VM_STARTED}" = "1" & "\${VM_DONE}" != "1"]?${report})`,
+      '');
   }
 
   const rgNumbers = new Set(ringGroups.map((g) => g.number));
@@ -161,7 +193,7 @@ function renderDestinations({ extensions, ringGroups, timeConditions, announceme
         lines.push(
           ` same => n,Gosub(sub-dialstr,s,1(${assertSafe('member', m)},1))`,
           ` same => n,GotoIf($["\${DIALSTR}" = ""]?m${i}next)`,
-          ` same => n,Dial(\${DIALSTR},${secs})`,
+          ` same => n,Dial(\${DIALSTR},${secs},U(sub-rec-callee))`,
           ' same => n,GotoIf($["\${DIALSTATUS}" = "ANSWER" | "\${DIALSTATUS}" = "CANCEL"]?done)',
           ` same => n(m${i}next),NoOp(member ${i} did not answer)`,
         );
@@ -171,7 +203,7 @@ function renderDestinations({ extensions, ringGroups, timeConditions, announceme
       for (const m of members) lines.push(` same => n,Gosub(sub-rg-add,s,1(${assertSafe('member', m)}))`);
       lines.push(
         ' same => n,GotoIf($["\${RG_TARGETS}" = ""]?fail)',
-        ` same => n,Dial(\${RG_TARGETS},${secs})`,
+        ` same => n,Dial(\${RG_TARGETS},${secs},U(sub-rec-callee))`,
         ' same => n,GotoIf($["\${DIALSTATUS}" = "ANSWER" | "\${DIALSTATUS}" = "CANCEL"]?done)',
       );
     }
@@ -226,6 +258,54 @@ function renderDestinations({ extensions, ringGroups, timeConditions, announceme
       q.fail_dest ? goto(q.fail_dest) : ' same => n,Hangup(34)');
   }
 
+  // Conference rooms. Options come from the database and are applied per call with CONFBRIDGE(); the profiles they
+  // start from are static (confbridge.conf). A PIN is asked for with a short tone (no sound files are installed) and
+  // compared here: the room PIN lets you in, the administrator PIN lets you in with the right to kick, lock and mute others.
+  for (const c of conferences) {
+    const num = assertSafe('conference', c.number);
+    const name = `dst-conference-${num}`;
+    if (!c.enabled) { ctx(name, ' same => n,Hangup(21)'); continue; }
+    const pin = (v, what) => {
+      if (v === null || v === undefined || v === '') return null;
+      if (!/^[0-9]{3,10}$/.test(String(v))) throw new Error(`refusing to render unsafe ${what}`);
+      return String(v);
+    };
+    const roomPin = pin(c.pin, 'conference PIN');
+    const adminPin = pin(c.admin_pin, 'conference administrator PIN');
+    // A profile set with CONFBRIDGE() is used by ConfBridge(<room>) only when no profile is named in the call.
+    const lines = [
+      ' same => n,Answer()',
+      ' same => n,Set(CONFBRIDGE(bridge,template)=c-bridge)',
+      ' same => n,Set(CONFBRIDGE(user,template)=c-user)',
+      ' same => n,Set(CONFBRIDGE(menu,template)=c-menu)',
+    ];
+    if (Number(c.max_members) > 0) lines.push(` same => n,Set(CONFBRIDGE(bridge,max_members)=${Number(c.max_members)})`);
+    if (c.mute_on_join) lines.push(' same => n,Set(CONFBRIDGE(user,startmuted)=yes)');
+    if (roomPin || adminPin) {
+      lines.push(
+        ' same => n,Set(CF_TRIES=0)',
+        ' same => n(ask),Set(CF_TRIES=$[${CF_TRIES} + 1])',
+        ' same => n,Playtones(!800/250)',
+        ' same => n,Wait(0.4)',
+        ' same => n,StopPlayTones()',
+        ' same => n,Read(CF_PIN,,10,,1,10)',
+      );
+      if (adminPin) lines.push(` same => n,GotoIf($["\${CF_PIN}" = "${adminPin}"]?admin)`);
+      if (roomPin) lines.push(` same => n,GotoIf($["\${CF_PIN}" = "${roomPin}"]?join)`);
+      else lines.push(' same => n,GotoIf($["${CF_PIN}" = ""]?join)');
+      lines.push(
+        ' same => n,Playtones(congestion)',
+        ' same => n,Wait(1.5)',
+        ' same => n,StopPlayTones()',
+        ' same => n,GotoIf($[${CF_TRIES} < 3]?ask)',
+        ' same => n,Hangup(21)',
+      );
+      if (adminPin) lines.push(' same => n(admin),Set(CONFBRIDGE(user,admin)=yes)');
+    }
+    lines.push(` same => n(join),ConfBridge(${num})`, ' same => n,Hangup()');
+    ctx(name, ...lines);
+  }
+
   const extNumbers = extensions.filter((e) => e.enabled).map((e) => e.number);
   for (const i of ivrs) {
     const name = `dst-ivr-${assertSafe('menu', i.number)}`;
@@ -261,7 +341,7 @@ function renderDestinations({ extensions, ringGroups, timeConditions, announceme
   return out;
 }
 
-function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGroups = [], timeConditions = [], announcements = [], ivrs = [], queues = [] }) {
+function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGroups = [], timeConditions = [], announcements = [], ivrs = [], queues = [], conferences = [] }) {
   const out = ['; GENERATED by the backend from the database. Do not edit: changes are overwritten.', ''];
   const enabledExt = extensions.filter((e) => e.enabled);
   const enabledNumbers = new Set(enabledExt.map((e) => e.number));
@@ -301,8 +381,16 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGro
       ` same => n,Set(X_FWD_BUSY=${ctx(e.fwd_busy)})`,
       ` same => n,Set(X_FWD_NA=${ctx(e.fwd_noanswer)})`,
       ` same => n,Set(X_NA_SECS=${Number(e.noanswer_secs) || 25})`,
+      ` same => n,Set(X_VM=${e.voicemail_enabled ? 1 : 0})`,
       ' same => n,Return()',
     );
+  }
+  out.push('');
+
+  // Extensions whose calls are recorded: sub-rec-caller / sub-rec-callee only check that the extension exists here.
+  out.push('; Extensions with call recording switched on.', '[ext-record]');
+  for (const e of enabledExt) {
+    if (e.record_calls) out.push(`exten => ${assertSafe('extension', e.number)},1,Return()`);
   }
   out.push('');
 
@@ -311,6 +399,7 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGro
     out.push(
       `exten => ${endpointName(t)},1,Set(TRUNK_CID=${t.caller_id_num ? assertSafe('caller id', t.caller_id_num) : ''})`,
       ` same => n,Set(TRUNK_CIDNAME=${t.caller_id_name ? assertSafe('caller id name', t.caller_id_name) : ''})`,
+      ` same => n,Set(TRUNK_REC=${t.record_calls ? 1 : 0})`,
       ' same => n,Return()',
     );
   }
@@ -337,6 +426,10 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGro
   for (const q of queues) {
     if (!q.enabled) continue;
     out.push(`exten => ${assertSafe('queue number', q.number)},1,Set(CDR(userfield)=to:\${EXTEN})`, ` same => n,Goto(dst-queue-${q.number},s,1)`);
+  }
+  for (const c of conferences) {
+    if (!c.enabled) continue;
+    out.push(`exten => ${assertSafe('conference number', c.number)},1,Set(CDR(userfield)=to:\${EXTEN})`, ` same => n,Goto(dst-conference-${c.number},s,1)`);
   }
   // Outbound routes: one context per route, included in the order set by the administrator. Asterisk searches
   // included contexts in order and uses the first one with a matching pattern, so "order" really is the
@@ -376,6 +469,7 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGro
       out.push(`; inbound route "${assertSafe('route name', r.name)}"`);
       for (const pattern of patterns(r.did)) {
         out.push(`exten => ${pattern},1,NoOp(Inbound ${t.name} -> route ${r.id})`, ' same => n,Set(CDR(userfield)=in:${EXTEN})');
+        if (t.record_calls) out.push(' same => n,Gosub(sub-rec-start,s,1)');
         if (r.cid_name_prefix) out.push(` same => n,Set(CALLERID(name)=${assertSafe('prefix', r.cid_name_prefix)} \${CALLERID(name)})`);
         out.push(...destinationLines(r.destination), ' same => n,Hangup()');
       }
@@ -386,6 +480,7 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGro
         out.push(
           `exten => ${pattern},1,NoOp(Inbound call on \${EXTEN} from \${CALLERID(num)} matched no route)`,
           ' same => n,Set(CDR(userfield)=in:${EXTEN}:unrouted)',
+          ...(t.record_calls ? [' same => n,Gosub(sub-rec-start,s,1)'] : []),
           ...destinationLines(t.inbound_default),
           ' same => n,Hangup(1)',
         );
@@ -395,7 +490,7 @@ function renderDialplan({ extensions, groups, trunks, inbound, outbound, ringGro
   }
   if (!enabledTrunks.length) out.push('; no trunks configured', '');
 
-  out.push(...renderDestinations({ extensions, ringGroups, timeConditions, announcements, ivrs, queues }));
+  out.push(...renderDestinations({ extensions, ringGroups, timeConditions, announcements, ivrs, queues, conferences }));
 
   return `${out.join('\n')}\n`;
 }
