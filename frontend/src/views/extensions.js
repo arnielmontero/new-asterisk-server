@@ -3,7 +3,7 @@ import { api, describeError } from '../api.js';
 import { store } from '../store.js';
 import { field, check, dataTable, openDialog, nullIfEmpty, copyText, stateBadge, loadDestinationData, destinationPicker } from './common.js';
 
-const STATE_CLASS = { Online: 'online', Offline: 'offline', 'In-Call': 'incall', Paging: 'paging', Unknown: 'unknown' };
+const STATE_CLASS = { Online: 'online', Offline: 'offline', Ringing: 'ringing', 'In-Call': 'incall', Paging: 'paging', Unknown: 'unknown' };
 
 export function extensionsView() {
   const dialogHost = h('div');

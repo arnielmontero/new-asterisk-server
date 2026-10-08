@@ -3,8 +3,9 @@ import { api, describeError } from '../api.js';
 import { store, canUseSoftphone, canControlCalls } from '../store.js';
 import { buildMyVoicemail } from './voicemail.js';
 import { buildConferenceRooms } from './conferences.js';
+import { buildParked } from './parking.js';
 
-const STATE_CLASS = { Online: 'online', Offline: 'offline', 'In-Call': 'incall', Paging: 'paging', Unknown: 'unknown' };
+const STATE_CLASS = { Online: 'online', Offline: 'offline', Ringing: 'ringing', 'In-Call': 'incall', Paging: 'paging', Unknown: 'unknown' };
 
 export function dashboardView({ softphone }) {
   const cards = h('div', { class: 'cards' });
@@ -17,7 +18,8 @@ export function dashboardView({ softphone }) {
   const queuesPanel = buildMyQueues();
   const voicemailPanel = buildMyVoicemail();
   const roomsPanel = buildConferenceRooms(softphone);
-  const el = h('div', { class: 'dashboard' }, extPanel, paging, phone.el, roomsPanel.el, voicemailPanel.el, queuesPanel.el, mine.el);
+  const parkedPanel = buildParked(softphone);
+  const el = h('div', { class: 'dashboard' }, extPanel, paging, phone.el, parkedPanel.el, roomsPanel.el, voicemailPanel.el, queuesPanel.el, mine.el);
 
   function renderCards(s) {
     const user = s.user;
@@ -63,7 +65,10 @@ export function dashboardView({ softphone }) {
                   class: 'btn danger',
                   disabled: !busy,
                   onclick: () => hangupExt(x.extension),
-                }, 'Hang up'))
+                }, 'Hang up'),
+                x.state === 'Ringing' && mine && mine !== x.extension
+                  ? h('button', { class: 'btn primary', 'data-pickup': x.extension, title: `Answer the call that is ringing at ${x.name}`, disabled: !canUseSoftphone(user) || s.sip.state !== 'registered' || !!s.call, onclick: () => softphone.call(`*8${x.extension}`).catch((err) => store.toast(err.message)) }, 'Pick up')
+                  : null)
             : null,
         );
       }),
@@ -149,6 +154,7 @@ export function dashboardView({ softphone }) {
     queuesPanel.update(s);
     voicemailPanel.update(s);
     roomsPanel.update(s);
+    parkedPanel.update(s);
     renderCards(s);
     renderPaging(s);
     phone.update(s);
@@ -156,7 +162,7 @@ export function dashboardView({ softphone }) {
 
   const unsubscribe = store.subscribe(update);
   update(store.state);
-  return { el, destroy: unsubscribe };
+  return { el, destroy() { unsubscribe(); parkedPanel.destroy(); } };
 }
 
 // ------------------------------------------------------------------ softphone
@@ -172,6 +178,12 @@ function buildPhonePanel(softphone) {
   };
   dial.addEventListener('keydown', (e) => { if (e.key === 'Enter' && dial.value) doCall(dial.value); });
   dial.addEventListener('input', () => { dial.value = dial.value.replace(/[^0-9*#+]/g, ''); });
+
+  // Who to transfer the call to. Created once so what was typed survives the redraws caused by call state changes.
+  const xfer = h('input', { id: 'xfer-target', type: 'text', inputmode: 'tel', maxlength: '24', placeholder: 'Transfer to…', autocomplete: 'off', 'aria-label': 'Extension or number to transfer the call to' });
+  xfer.addEventListener('input', () => { xfer.value = xfer.value.replace(/[^0-9*#+]/g, ''); });
+  const act = (fn) => async () => { try { await fn(); } catch (err) { store.toast(err?.message || 'That did not work'); } };
+  const needTarget = (fn) => act(() => { if (!xfer.value) throw new Error('Type the extension or number to transfer to first'); return fn(xfer.value); });
 
   const dialRow = h('div', { class: 'dial-row' },
     dial,
@@ -219,7 +231,8 @@ function buildPhonePanel(softphone) {
       call,
       h('div', { class: `banner ${c.state === 'connected' ? 'ok' : 'info'}`, id: 'call-banner' },
         h('strong', null, c.direction === 'in' ? `From ${who}` : `To ${who}`), ` – ${stateText}`,
-        c.paging && c.direction === 'in' && c.state === 'connected' ? ' (listen only)' : ''),
+        c.paging && c.direction === 'in' && c.state === 'connected' ? ' (listen only)' : '',
+        c.held ? ' (on hold)' : ''),
       c.state === 'connected' && !c.paging
         ? h('div', { class: 'keypad', id: 'keypad', 'aria-label': 'Keypad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map((k) =>
             h('button', { class: 'btn small', type: 'button', 'data-key': k, onclick: () => softphone.sendDtmf(k) }, k)))
@@ -229,7 +242,26 @@ function buildPhonePanel(softphone) {
           ? [h('button', { class: 'btn primary', id: 'answer', onclick: () => softphone.answer() }, 'Answer'),
              h('button', { class: 'btn danger', id: 'reject', onclick: () => softphone.reject() }, 'Reject')]
           : [c.state === 'connected' && !c.paging ? h('button', { class: 'btn', id: 'mute', onclick: () => softphone.toggleMute() }, c.muted ? 'Unmute' : 'Mute') : null,
-             h('button', { class: 'btn danger', id: 'hangup', onclick: () => softphone.hangup() }, c.paging && c.direction === 'out' ? 'End page' : 'Hang up')]),
+             c.state === 'connected' && !c.paging && !c.consult
+               ? h('button', { class: 'btn', id: 'hold', onclick: act(() => softphone.hold(!c.held)) }, c.held ? 'Resume' : 'Hold')
+               : null,
+             c.consult ? null : h('button', { class: 'btn danger', id: 'hangup', onclick: () => softphone.hangup() }, c.paging && c.direction === 'out' ? 'End page' : 'Hang up')]),
+      // Transfer and park: only on an ordinary connected call that is not already being handed over.
+      c.state === 'connected' && !c.paging && !s.incoming && !c.transferring && !c.consult
+        ? h('div', { class: 'transfer', id: 'transfer' },
+            h('div', { class: 'dial-row' }, xfer,
+              h('button', { class: 'btn', id: 'xfer-blind', title: 'Pass the caller on now and leave the call', onclick: needTarget((n) => softphone.blindTransfer(n)) }, 'Transfer'),
+              h('button', { class: 'btn', id: 'xfer-consult', title: 'Speak to them first, then pass the caller on', onclick: needTarget((n) => softphone.startConsult(n)) }, 'Ask first'),
+              h('button', { class: 'btn', id: 'park', title: 'Leave the caller waiting in a parking slot; anyone can pick them up', onclick: act(() => softphone.park()) }, 'Park')))
+        : null,
+      c.transferring ? h('div', { class: 'banner info', id: 'transfer-banner' }, c.transferring === '750' ? 'Parking the call…' : `Transferring to ${c.transferring}…`) : null,
+      c.consult
+        ? h('div', { class: 'banner info', id: 'consult-banner' },
+            h('strong', null, `Asking ${c.consult.peer}`), ` – ${{ calling: 'calling…', ringing: 'ringing…', connected: 'connected' }[c.consult.state] || c.consult.state}. ${c.peer} is on hold.`,
+            h('div', { class: 'actions' },
+              h('button', { class: 'btn primary', id: 'xfer-complete', disabled: c.consult.state !== 'connected' || !!c.transferring, onclick: act(() => softphone.completeTransfer()) }, 'Complete transfer'),
+              h('button', { class: 'btn', id: 'xfer-cancel', disabled: !!c.transferring, onclick: act(() => softphone.hangup()) }, 'Cancel and go back')))
+        : null,
     );
   }
 

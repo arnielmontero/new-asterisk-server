@@ -20,7 +20,8 @@ const DIAL_PATTERN_RE = /^_?[0-9XZN.!+*[\]-]{1,40}$/;
 const PREPEND_RE = /^\+?[0-9*]{0,20}$/;
 const CODECS = ['ulaw', 'alaw', 'g722', 'gsm', 'opus', 'g729'];
 
-const RESERVED_NUMBERS = new Set(['600']);
+// 600 is the echo test; 750 is the parking extension and 751-759 the parking slots (res_parking.conf).
+const RESERVED_NUMBERS = new Set(['600', '750', '751', '752', '753', '754', '755', '756', '757', '758', '759']);
 
 const numberAsString = (inner) => z.preprocess((v) => (typeof v === 'number' ? String(v) : v), inner);
 const bool = z.boolean();

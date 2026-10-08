@@ -197,6 +197,7 @@ function connectSocket() {
   socket.on('trunk.snapshot', (trunks) => store.set({ trunks }));
   socket.on('pbx.apply', (pbx) => store.set({ pbx }));
   socket.on('cdr.new', () => store.set({ cdrTick: store.state.cdrTick + 1 }));
+  socket.on('parking.changed', (list) => store.set({ parked: list.map((p) => ({ ...p, expiresAt: Date.now() + p.secondsLeft * 1000 })) }));
   socket.on('conference.changed', () => store.set({ conferenceTick: store.state.conferenceTick + 1 }));
   socket.on('voicemail.changed', () => store.set({ voicemailTick: store.state.voicemailTick + 1 }));
   socket.on('ami.snapshot', (ami) => store.set({ ami }));

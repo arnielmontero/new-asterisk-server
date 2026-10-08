@@ -18,6 +18,7 @@ const { CdrService } = require('./cdr/service');
 const { QueueService } = require('./queues/service');
 const { VoicemailService } = require('./voicemail/service');
 const { ConferenceService } = require('./conferences/service');
+const { ParkingService } = require('./parking/service');
 const { RecordingService } = require('./recordings/service');
 const { PagingService } = require('./paging/service');
 const { watchOriginateResults } = require('./calls/routes');
@@ -70,6 +71,7 @@ async function main() {
   const cdr = new CdrService({ db, registry, ami, logger });
   const queueService = new QueueService({ ami, db, logger });
   const conferenceService = new ConferenceService({ ami, registry, logger });
+  const parking = new ParkingService({ ami, registry, logger });
   const voicemail = new VoicemailService({ db, ami, logger, dir: path.join(config.pbxMediaDir, 'voicemail') });
   const recordings = new RecordingService({ db, ami, logger, dir: path.join(config.pbxMediaDir, 'recordings') });
   const paging = new PagingService({ ami, state, registry, audit, logger });
@@ -77,13 +79,13 @@ async function main() {
 
   let socketApi = null;
   const app = createApp({
-    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService, conferenceService, voicemail, recordings,
+    config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService, conferenceService, parking, voicemail, recordings,
     version: pkg.version,
     startedAt,
     onUserSecurityChange: (userId) => socketApi?.disconnectUser(userId),
   });
   const server = http.createServer(app);
-  socketApi = createSocketServer({ httpServer: server, authService, state, paging, ami, registry, trunkStatus, applier, cdr, voicemail, conferenceService, logger });
+  socketApi = createSocketServer({ httpServer: server, authService, state, paging, ami, registry, trunkStatus, applier, cdr, voicemail, conferenceService, parking, logger });
 
   // Write the generated configuration before Asterisk is asked to load it; a reload follows once AMI connects.
   await applier.apply('startup', { force: true });

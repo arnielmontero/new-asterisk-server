@@ -5,7 +5,7 @@ Update this file as work lands. Status is only moved to `PASS` after the behavio
 
 **Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done and verified · `MANUAL REQUIRED` needs hardware/human · `BLOCKED` cannot proceed (reason noted)
 
-**Last updated:** 2026-10-05 (all three phases complete; the only open items are the MANUAL REQUIRED hardware / real-LAN tests)
+**Last updated:** 2026-10-08 (the extension programme — managed extensions, trunks, call flow, voicemail, recording, conferences, transfer, parking, presence — is complete; the only open items are the MANUAL REQUIRED hardware / real-LAN tests)
 
 ---
 
@@ -210,13 +210,19 @@ marked done.
 - Not done: message-waiting lamps on physical phones (needs an MWI subscription / notify template); listening to voicemail by phone (no Asterisk sound files are installed, so there are no spoken menus); only the web dashboard plays messages
 - Defects found by testing: `CHANNEL(endpoint)` exists only on PJSIP channels (the extension is now read from the channel name); `Record()` fails without a beep sound file (option `q`, a generated tone is the beep); Asterisk does not reliably send `MixMonitorStop` for a recording that ends with the call, so the channel's `Hangup` ends it; refreshing the voicemail list on "heard" removed the player and cut the sound off
 
-### Phase C — Conferencing, parking, transfer, presence (in progress)
+### Phase C — Conferencing, parking, transfer, presence (done 2026-10-08)
 #### C1 — conference rooms (done 2026-10-08)
 - [x] Rooms (3-6 digit number, name, optional PIN, optional administrator PIN, mute on entry, member limit, enabled); dial the number from anywhere, or use a room as a destination of inbound routes, menus, schedules and forwarding. PINs are asked for after a tone (no Asterisk sound files are installed), compared in the dialplan, three tries; the administrator PIN joins with admin rights; options are applied per call with a channel profile (a profile named in `ConfBridge()` would have ignored them)
 - [x] Live room state from Asterisk (who is in each room, extension recognised, admin / muted / talking); mute, unmute, remove and lock / unlock from the Conferences page, each only for someone in the room right now; phone keys 1 mute yourself, 2 lock, 3 remove the last person (admin); dashboard lists the rooms with a Join button. All changes audited, PINs never
 - [x] **Verified:** 322 backend tests; 7 real-browser scenarios (`tests/e2e/conferences.test.js`): a room built in the UI, wrong PIN three times, three browsers sending 440 / 880 / 1320 Hz tones and each measuring exactly the other two (and not itself), mute / unmute / remove / lock from the admin page changing what is heard, admin PIN with key 3, member limit and mute on entry
 - Defects found by testing: `CONFBRIDGE(user,muted)` is not an option (`startmuted`), and settings made with `CONFBRIDGE()` are silently ignored when `ConfBridge()` names a profile
-- [ ] C2 call parking, C3 attended and blind transfer (hold, REFER), C4 busy-lamp presence and call pickup
+#### C2 / C3 / C4 — hold, transfer, parking, presence, pickup (done 2026-10-08)
+- [x] Hold / resume (re-INVITE) with music on hold (a generated second of silence: no Asterisk sound files are installed, and without any hold file the held person kept hearing the holder); blind transfer (SIP REFER) and attended transfer in the browser softphone (hold the caller, call the third person, complete or cancel; declined, busy or hung-up consultations return to the caller; a transfer the phone system refuses leaves the call as it was and says so); `allow_transfer` is on for extensions and stays off for trunks; the softphone hangs up its own legs when Asterisk reports the transfer complete (Asterisk waits for that)
+- [x] Call parking (`res_parking`, slots 751-759 behind 750, two minutes then it rings back the person who parked): Park button, live "Parked calls" panel for everyone with a countdown and Pick up; numbers 750-759 are reserved
+- [x] Presence: extension state now includes Ringing (flashing lamp on the dashboard, shared with the Extensions page); every extension's hint is reachable from the phones' context so a desk phone's busy-lamp key can subscribe to it; directed pickup `*8<ext>` (digits only, so no dial-string injection) and a Pick up button on a ringing extension
+- [x] **Verified:** 328 backend tests; 8 real-browser scenarios (`tests/e2e/transfer.test.js`) with three tones: hold silences the held person, blind transfer reconnects the caller to the third person (and not the transferor), a transfer to a missing number leaves the call alone, attended transfer (the held caller hears nothing during the consultation, then hears the third person), cancel and decline return to the caller, park then pick up from another browser with the slot emptying, pickup of a ringing extension; `scripts/test-blf.sh`: a SIP phone registers, subscribes to extension 1002's busy lamp and sees terminated -> early -> terminated while 1002 rings
+- Defects found by testing: `parkedplay=none` is not a value (`no`); a transfer left the transferor's call up because Asterisk expects the transferor to hang up after the NOTIFY "200"; ending a consultation tore down both calls because the "consulting" flag was read after it had been cleared; ConfBridge ignores per-call settings when a profile is named
+- Not done: pickup groups (any extension may pick up any ringing extension); a ring-back tone or spoken slot for a parked caller (no sound files); BLF keys for parking slots and conference rooms (hints exist for slots)
 
 ---
 

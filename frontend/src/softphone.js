@@ -20,7 +20,9 @@ export class Softphone {
     this.audioEl = audioEl;
     this.ua = null;
     this.registerer = null;
-    this.session = null; // the one active Inviter / Invitation
+    this.session = null; // the active Inviter / Invitation: what the screen, the keypad and the microphone switch act on
+    this.main = null; // while a transfer is being arranged: the first call, on hold, behind `session` (the consultation)
+    this.transferTimer = null;
     this.config = null;
     this.stopped = true;
     this.reconnectTimer = null;
@@ -208,13 +210,136 @@ export class Softphone {
   async hangup() {
     const s = this.session;
     if (!s) return;
+    const consulting = !!this.main; // read now: ending the consultation clears it
     stopRingtone();
     try {
       if (s.state === SessionState.Established) await s.bye();
       else if (s instanceof Inviter) await s.cancel();
       else await s.reject({ statusCode: 603 });
     } catch { /* the far end may have hung up already */ }
+    // Ending a consultation goes back to the caller on hold (see onTerminated); only a normal call is torn down here.
+    if (consulting) return;
     this.cleanup();
+  }
+
+  // ----------------------------------------------------------- hold, transfer, park
+  targetUri(number) {
+    if (!/^[0-9*#+]{2,24}$/.test(String(number))) throw new Error('Enter an extension or a phone number (digits, *, # or +)');
+    return UserAgent.makeURI(`sip:${number.replace(/#/g, '%23')}@${this.config.domain}`);
+  }
+
+  /** Put the active call on hold (the other person hears nothing) or take it off hold. */
+  async hold(on = true) {
+    const s = this.session;
+    if (!s || s.state !== SessionState.Established || store.state.call?.paging) return false;
+    try {
+      await s.invite({ sessionDescriptionHandlerOptions: { constraints: MEDIA, hold: on } });
+      this.setCall({ held: on });
+      return true;
+    } catch {
+      store.toast(`Could not ${on ? 'put the call on hold' : 'resume the call'}`);
+      return false;
+    }
+  }
+
+  /** Hand the caller to `number` and leave the call. The phone system reports back if that did not work. */
+  async blindTransfer(number) {
+    const s = this.session;
+    if (!s || s.state !== SessionState.Established || store.state.call?.paging || this.main) return;
+    await this.refer(s, this.targetUri(number), number);
+  }
+
+  /** Park the caller: transferring to the parking extension leaves them in a slot anybody can pick up. */
+  async park() {
+    await this.blindTransfer('750');
+  }
+
+  async refer(session, target, label) {
+    this.setCall({ transferring: label });
+    clearTimeout(this.transferTimer);
+    // A transfer that is refused leaves the call as it was: stop showing "transferring" after a while.
+    this.transferTimer = setTimeout(() => this.setCall({ transferring: null }), 10000);
+    try {
+      await session.refer(target, {
+        requestDelegate: {
+          onReject: (response) => {
+            this.setCall({ transferring: null });
+            store.toast(`Transfer refused: ${response.message.statusCode} ${response.message.reasonPhrase}`);
+          },
+        },
+      });
+    } catch (err) {
+      this.setCall({ transferring: null });
+      store.toast(`Transfer failed: ${err?.message || 'unknown error'}`);
+    }
+  }
+
+  /** The phone system reports the progress of a transfer as a NOTIFY carrying a SIP status line. */
+  onNotify(notification) {
+    notification.accept();
+    const status = /^SIP\/2\.0 (\d{3}) ?(.*)$/m.exec(notification.request.body || '');
+    if (!status) return;
+    const code = Number(status[1]);
+    if (code >= 200 && code < 300) {
+      // The transfer is done. The phone system leaves it to us to hang up our side(s) of the calls.
+      for (const session of new Set([this.session, this.main])) {
+        if (session && session.state === SessionState.Established) session.bye().catch(() => {});
+      }
+      return;
+    }
+    if (code >= 300) {
+      clearTimeout(this.transferTimer);
+      this.setCall({ transferring: null });
+      store.toast(`The transfer did not go through (${code} ${status[2].trim() || 'failed'}). You are still on the call.`);
+    }
+  }
+
+  /** Attended transfer, step 1: put the caller on hold and call the person they should be passed to. */
+  async startConsult(number) {
+    const main = this.session;
+    if (!main || main.state !== SessionState.Established || this.main || store.state.call?.paging) return;
+    const target = this.targetUri(number);
+    if (!(await this.hold(true))) return;
+    const inviter = new Inviter(this.ua, target, { sessionDescriptionHandlerOptions: { constraints: MEDIA } });
+    this.main = main;
+    this.session = inviter;
+    this.track(inviter, { direction: 'out', peer: number, consult: true });
+    this.setCall({ consult: { peer: number, state: 'calling' } });
+    try {
+      await inviter.invite({
+        requestDelegate: {
+          onProgress: () => this.setCall({ consult: { peer: number, state: 'ringing' } }),
+          onReject: (response) => {
+            const code = response.message.statusCode;
+            const why = { 404: 'no such extension', 480: 'not available', 486: 'busy', 603: 'declined' }[code] || `${code} ${response.message.reasonPhrase}`;
+            store.toast(`${number}: ${why}. Back to the caller.`);
+          },
+        },
+      });
+    } catch (err) {
+      await this.resumeMain();
+      store.toast(micMessage(err) || `Could not call ${number}: ${err?.message || 'unknown error'}`);
+    }
+  }
+
+  /** Attended transfer, step 2: connect the caller on hold to the person you consulted, and leave. */
+  async completeTransfer() {
+    const main = this.main;
+    const consult = this.session;
+    if (!main || !consult || consult.state !== SessionState.Established) return;
+    await this.refer(main, consult, store.state.call?.consult?.peer || '');
+  }
+
+  /** Go back to the first caller after a consultation ended (cancelled, declined, or the other person hung up). */
+  async resumeMain() {
+    if (!this.main) return;
+    this.session = this.main;
+    this.main = null;
+    this.setCall({ consult: null });
+    if (this.session.state === SessionState.Established) {
+      this.attachAudio(this.session);
+      await this.hold(false);
+    }
   }
 
   toggleMute() {
@@ -257,27 +382,63 @@ export class Softphone {
 
   // ----------------------------------------------------------------- session
   track(session, meta) {
-    this.session = session;
+    if (!meta.consult) this.session = session;
+    session.delegate = { ...(session.delegate || {}), onNotify: (notification) => this.onNotify(notification) };
     session.stateChange.addListener((state) => {
-      if (this.session !== session) return;
-      if (state === SessionState.Established) this.onEstablished(meta);
-      else if (state === SessionState.Terminated) {
-        stopRingtone();
-        const wasPage = !!store.state.call?.paging;
-        this.cleanup();
-        if (wasPage && meta.direction === 'in') store.toast('Page ended', 'info');
+      if (state === SessionState.Established) {
+        if (this.session === session) this.onEstablished(meta);
+      } else if (state === SessionState.Terminated) {
+        this.onTerminated(session, meta);
       }
     });
+  }
+
+  onTerminated(session, meta) {
+    if (store.state.call?.transferring) {
+      // The transfer worked: the phone system ends our calls. Nothing is left.
+      clearTimeout(this.transferTimer);
+      stopRingtone();
+      const label = store.state.call.transferring;
+      this.cleanup();
+      store.toast(label === '750' ? 'Call parked' : `Call transferred to ${label}`, 'info');
+      return;
+    }
+    if (session === this.session) {
+      stopRingtone();
+      if (meta.consult && this.main) {
+        // The person being consulted declined, was busy or hung up: back to the caller.
+        this.resumeMain();
+        return;
+      }
+      const wasPage = !!store.state.call?.paging;
+      this.cleanup();
+      if (wasPage && meta.direction === 'in') store.toast('Page ended', 'info');
+    } else if (session === this.main) {
+      // The caller on hold gave up while we were consulting: the consultation is now the call.
+      const consult = store.state.call?.consult;
+      this.main = null;
+      store.toast('The caller on hold hung up', 'info');
+      store.set({ call: { direction: 'out', peer: consult?.peer || '', state: consult?.state === 'connected' ? 'connected' : 'ringing', paging: null, muted: false, held: false, consult: null } });
+    }
+  }
+
+  attachAudio(session) {
+    const pc = session.sessionDescriptionHandler.peerConnection;
+    const stream = new MediaStream();
+    pc.getReceivers().forEach((r) => r.track && stream.addTrack(r.track));
+    this.audioEl.srcObject = stream;
+    this.playRemote();
   }
 
   onEstablished(meta) {
     stopRingtone();
     const handler = this.session.sessionDescriptionHandler;
     const pc = handler.peerConnection;
-    const stream = new MediaStream();
-    pc.getReceivers().forEach((r) => r.track && stream.addTrack(r.track));
-    this.audioEl.srcObject = stream;
-    this.playRemote();
+    this.attachAudio(this.session);
+    if (meta.consult) {
+      this.setCall({ consult: { peer: meta.peer, state: 'connected' }, muted: false });
+      return;
+    }
     // Page recipients must not transmit: keep their microphone muted locally too.
     const listenOnly = meta.direction === 'in' && !!meta.paging;
     if (listenOnly) pc.getSenders().forEach((s) => { if (s.track) s.track.enabled = false; });
@@ -304,6 +465,7 @@ export class Softphone {
 
   cleanup() {
     this.session = null;
+    this.main = null;
     this.audioEl.srcObject = null;
     store.set({ call: null, incoming: null });
   }

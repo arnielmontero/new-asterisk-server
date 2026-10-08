@@ -19,7 +19,7 @@ function normalizeDeviceState(raw) {
 }
 
 /**
- * Derives extension state (Online / Offline / In-Call / Paging) from real
+ * Derives extension state (Online / Offline / Ringing / In-Call / Paging) from real
  * Asterisk events. Nothing here is simulated: when AMI is down the state is
  * reported as "Unknown" rather than guessed.
  *
@@ -165,11 +165,13 @@ class ExtensionState extends EventEmitter {
     const eps = [this.endpoints.get(ext), this.endpoints.get(`${ext}-phone`)];
     const registered = eps.some((e) => e.contact || REGISTERED_DEVICE.has(e.device));
     const inCall = eps.some((e) => IN_USE.has(e.device));
+    const ringing = eps.some((e) => e.device === 'RINGING');
     const paging = !!this.paging && (this.paging.caller === ext || this.paging.targets.includes(ext));
     let state;
     if (!this.ami.isConnected() || !this.synced) state = 'Unknown';
     else if (paging) state = 'Paging';
     else if (inCall) state = 'In-Call';
+    else if (ringing) state = 'Ringing';
     else if (registered) state = 'Online';
     else state = 'Offline';
     return {

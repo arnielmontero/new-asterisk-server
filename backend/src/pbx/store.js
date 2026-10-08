@@ -61,7 +61,7 @@ class PbxStore {
 
   /** A number may be an extension, a paging group, or reserved, never two of them. */
   async assertNumberFree(number, { exceptExtensionId = null, exceptGroupId = null, exceptRingGroupId = null, exceptIvrId = null, exceptQueueId = null, exceptConferenceId = null } = {}) {
-    if (RESERVED_NUMBERS.has(number)) throw conflict(`${number} is reserved (echo test)`, 'number_reserved');
+    if (RESERVED_NUMBERS.has(number)) throw conflict(`${number} is reserved (echo test or call parking)`, 'number_reserved');
     const e = (await this.db.query('SELECT id FROM extensions WHERE number = $1', [number])).rows[0];
     if (e && Number(e.id) !== exceptExtensionId) throw conflict(`${number} is already an extension`, 'number_in_use');
     const g = (await this.db.query('SELECT id FROM paging_groups WHERE number = $1', [number])).rows[0];

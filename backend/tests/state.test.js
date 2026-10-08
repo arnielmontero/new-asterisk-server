@@ -103,10 +103,10 @@ describe('extension state derivation', () => {
     }
   });
 
-  test('device state drives In-Call and back to Online', () => {
+  test('device state drives Ringing, In-Call and back to Online', () => {
     ev({ Event: 'ContactStatus', EndpointName: '1001', ContactStatus: 'Reachable' });
     ev({ Event: 'DeviceStateChange', Device: 'PJSIP/1001', State: 'RINGING' });
-    assert.equal(state.get('1001').state, 'Online', 'ringing is not yet a call');
+    assert.equal(state.get('1001').state, 'Ringing', 'ringing is not yet a call: the lamp flashes and anyone can pick the call up');
     ev({ Event: 'DeviceStateChange', Device: 'PJSIP/1001', State: 'INUSE' });
     assert.equal(state.get('1001').state, 'In-Call');
     ev({ Event: 'DeviceStateChange', Device: 'PJSIP/1001', State: 'NOT_INUSE' });

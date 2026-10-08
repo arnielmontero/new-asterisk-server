@@ -77,8 +77,18 @@ chmod 0777 "$GEN_DIR"
 # Media shared with the backend: prompts are written by the backend and played here; voicemail and recordings are
 # written here and served by the backend. Flat directories (no sub-directories) keep permissions simple.
 MEDIA_DIR=/pbx-media
-mkdir -p "$MEDIA_DIR/prompts" "$MEDIA_DIR/voicemail" "$MEDIA_DIR/recordings"
-chmod 0777 "$MEDIA_DIR" "$MEDIA_DIR/prompts" "$MEDIA_DIR/voicemail" "$MEDIA_DIR/recordings"
+mkdir -p "$MEDIA_DIR/prompts" "$MEDIA_DIR/voicemail" "$MEDIA_DIR/recordings" "$MEDIA_DIR/moh"
+chmod 0777 "$MEDIA_DIR" "$MEDIA_DIR/prompts" "$MEDIA_DIR/voicemail" "$MEDIA_DIR/recordings" "$MEDIA_DIR/moh"
+
+# Music on hold: one second of silence as an 8 kHz mono 16-bit WAV (44-byte header, 16000 bytes of zeros). Without any
+# file Asterisk cannot start hold treatment, and a held or parked caller would keep hearing whoever put them on hold.
+if [ ! -s "$MEDIA_DIR/moh/silence.wav" ]; then
+  {
+    printf 'RIFF\244\076\000\000WAVEfmt \020\000\000\000\001\000\001\000\100\037\000\000\200\076\000\000\002\000\020\000data\200\076\000\000'
+    head -c 16000 /dev/zero
+  } > "$MEDIA_DIR/moh/silence.wav"
+fi
+chmod 0644 "$MEDIA_DIR/moh/silence.wav"
 
 rm -rf "$ETC_DIR" "$KEY_DIR"
 mkdir -p "$ETC_DIR" "$KEY_DIR"

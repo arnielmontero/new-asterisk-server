@@ -17,7 +17,7 @@ const mySettings = z.strictObject({
 }).refine((o) => Object.keys(o).length > 0, { message: 'Provide at least one field to change' });
 
 /** Mounted behind authenticate (all roles may read status). */
-function extensionRoutes({ state, registry, store, config, applier, audit, queueService, conferenceService }) {
+function extensionRoutes({ state, registry, store, config, applier, audit, queueService, conferenceService, parking }) {
   const router = express.Router();
 
   const pagingGroups = () => registry.pagingGroups().map((g) => ({ number: g.number, name: g.name, members: g.members }));
@@ -28,6 +28,11 @@ function extensionRoutes({ state, registry, store, config, applier, audit, queue
       pagingGroups: pagingGroups(),
       echoExtension: registry.echoExtension,
     });
+  });
+
+  // Calls waiting in the parking slots, and for how much longer.
+  router.get('/parking', (_req, res) => {
+    res.json({ parked: parking.list() });
   });
 
   // Conference rooms anyone with a phone may dial: number, name and how many are in them. Never the PINs.

@@ -19,11 +19,12 @@ const { COOKIE_NAME } = require('../auth/middleware');
  *   paging.ended              { group, name, extension, username, reason, durationSeconds }
  *   paging.failed             { group, name, extension, username, reason }
  *   voicemail.changed         { extension, kind: new|heard|deleted, id }   (owner of the box and administrators)
+ *   parking.changed           [{ slot, caller, name, parkedBy, secondsLeft }]   on connect and whenever a call is parked or leaves
  *   conference.changed        { room }                                     (someone joined, left, was muted or the room was locked)
  *   ami.connected / ami.disconnected   { state, ... }          (administrators only)
  *   ami.snapshot              { state, ... }                    (administrators only, on connect)
  */
-function createSocketServer({ httpServer, authService, state, paging, ami, registry, trunkStatus, applier, cdr, voicemail, conferenceService, logger }) {
+function createSocketServer({ httpServer, authService, state, paging, ami, registry, trunkStatus, applier, cdr, voicemail, conferenceService, parking, logger }) {
   const io = new Server(httpServer, {
     path: '/socket.io',
     serveClient: false,
@@ -58,6 +59,7 @@ function createSocketServer({ httpServer, authService, state, paging, ami, regis
     socket.join(`user:${user.id}`);
     if (user.extension) socket.join(`ext:${user.extension}`);
     socket.emit('extension.snapshot', state.snapshot());
+    if (parking) socket.emit('parking.changed', parking.list());
     if (user.role === 'admin') {
       socket.join('admins');
       socket.emit('ami.snapshot', ami.status());
@@ -75,6 +77,7 @@ function createSocketServer({ httpServer, authService, state, paging, ami, regis
   applier.on('failed', () => io.to('admins').emit('pbx.apply', applier.status()));
   // A message arrived, was heard or deleted: the owner's open dashboards (and administrators) refresh.
   if (voicemail) voicemail.onChange = (m) => io.to(`ext:${m.extension}`).to('admins').emit('voicemail.changed', m);
+  if (parking) parking.on('change', (list) => io.emit('parking.changed', list));
   if (conferenceService) conferenceService.onChange = (c) => io.emit('conference.changed', c);
   if (cdr) cdr.onRecord = (r) => io.to('admins').emit('cdr.new', r);
   state.on('change', (ext) => io.emit('extension.status.changed', ext));

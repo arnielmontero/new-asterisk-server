@@ -202,3 +202,12 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: .85em; }
 .vm-meta { flex: 1 1 14rem; }
 .vm-new, .vm-count { margin-left: .5rem; }
 .wide-player { width: 100%; max-width: none; }
+
+/* ringing lamp, transfer, parked calls */
+:root { --ringing: #d4a000; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ringing: #ffd24a; } }
+:root[data-theme="dark"] { --ringing: #ffd24a; }
+.card.ringing { border-left-color: var(--ringing); }
+.badge.ringing { background: var(--ringing); color: #1a1a1a; }
+.transfer { margin-top: .5rem; }
+.transfer input { flex: 1 1 8rem; }

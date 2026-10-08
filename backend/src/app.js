@@ -24,7 +24,7 @@ const { recordingRoutes } = require('./recordings/routes');
  * inject a fake AMI while production wires the real one.
  */
 function createApp(deps) {
-  const { config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService, conferenceService, voicemail, recordings, version, startedAt, onUserSecurityChange } = deps;
+  const { config, logger, db, users, audit, authService, ami, state, paging, registry, store, applier, trunkStatus, cdr, queueService, conferenceService, parking, voicemail, recordings, version, startedAt, onUserSecurityChange } = deps;
   const app = express();
 
   app.disable('x-powered-by');
@@ -66,7 +66,7 @@ function createApp(deps) {
   const auth = authenticate(authService);
   api.use(auth);
 
-  api.use(extensionRoutes({ state, registry, store, config, applier, audit, queueService, conferenceService }));
+  api.use(extensionRoutes({ state, registry, store, config, applier, audit, queueService, conferenceService, parking }));
   api.use('/users', requireRole('admin'), userRoutes({ users, audit, onUserSecurityChange }));
   api.use('/audit', requireRole('admin'), auditRoutes({ audit }));
   api.use('/system', requireRole('admin'), systemRoutes({ db, ami, state, paging, applier, trunkStatus, version, startedAt }));
